@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  deepinfra-proxy-deno:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepinfra-proxy-deno
+    ports:
+      - "${DENO_PORT:-8000}:8000"
+    environment:
+      - VALID_API_KEYS=${VALID_API_KEYS}
+      - DEEPINFRA_MIRRORS=${DEEPINFRA_MIRRORS}
+      - ENABLE_DETAILED_LOGGING=${ENABLE_DETAILED_LOGGING:-true}
+      - LOG_USER_MESSAGES=${LOG_USER_MESSAGES:-false}
+      - LOG_RESPONSE_CONTENT=${LOG_RESPONSE_CONTENT:-false}
+      - PERFORMANCE_MODE=${PERFORMANCE_MODE:-balanced}
+      - MAX_RETRIES=${MAX_RETRIES:-3}
+      - RETRY_DELAY=${RETRY_DELAY:-1000}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30000}
+      - RANDOM_DELAY=${RANDOM_DELAY:-100-500ms}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - deepinfra-network
+
+networks:
+  deepinfra-network:
+    driver: bridge
