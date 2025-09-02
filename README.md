@@ -76,9 +76,9 @@ sudo ufw allow ${NGINX_PORT:-80}
 - 开启 "Always Use HTTPS" (可选)
 - 配置 DNS 解析到服务器 IP
 
-## 🌐 API 接口
+## 🌐 API 接口使用指南
 
-### 健康检查
+### 🎆 健康检查
 ```bash
 # HTTP (本地测试)
 curl http://deepinfra.kyx03.de/health
@@ -87,21 +87,420 @@ curl http://deepinfra.kyx03.de/health
 curl https://deepinfra.kyx03.de/health
 ```
 
-### 获取模型列表
+### 📋 获取模型列表
 ```bash
+# 基础请求
 curl https://deepinfra.kyx03.de/v1/models
+
+# 带 API Key
+curl -H "Authorization: Bearer linux.do" https://deepinfra.kyx03.de/v1/models
 ```
 
-### 聊天完成
+### 💬 聊天对话使用指南
+
+#### 🚀 基础对话示例
+
+**单轮对话**：
 ```bash
 curl -X POST https://deepinfra.kyx03.de/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer linux.do" \
   -d '{
     "model": "deepseek-ai/DeepSeek-V3.1",
-    "messages": [{"role": "user", "content": "Hello!"}],
+    "messages": [
+      {"role": "user", "content": "你好，请介绍一下你自己"}
+    ],
+    "stream": false,
+    "temperature": 0.7,
+    "max_tokens": 1000
+  }'
+```
+
+**多轮对话**：
+```bash
+curl -X POST https://deepinfra.kyx03.de/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V3.1",
+    "messages": [
+      {"role": "system", "content": "你是一个专业的编程助手"},
+      {"role": "user", "content": "请帮我写一个 Python 函数来计算斐波那契数列"},
+      {"role": "assistant", "content": "好的，我来帮你写一个斐波那契数列的函数..."},
+      {"role": "user", "content": "请加上详细的注释和错误处理"}
+    ],
+    "stream": false,
+    "temperature": 0.3
+  }'
+```
+
+#### 🌊 流式对话示例
+
+**实时流式输出**：
+```bash
+curl -X POST https://deepinfra.kyx03.de/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-R1-0528-Turbo",
+    "messages": [
+      {"role": "user", "content": "请给我讲一个关于人工智能发展的故事"}
+    ],
+    "stream": true,
+    "temperature": 0.8,
+    "max_tokens": 2000
+  }'
+```
+
+#### 🛠️ 不同模型使用示例
+
+**中文对话** (GLM-4.5)：
+```bash
+curl -X POST https://deepinfra.kyx03.de/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "zai-org/GLM-4.5",
+    "messages": [
+      {"role": "user", "content": "请用中文解释一下量子计算的基本原理"}
+    ],
     "stream": false
   }'
+```
+
+**代码生成** (Qwen-Coder)：
+```bash
+curl -X POST https://deepinfra.kyx03.de/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+    "messages": [
+      {"role": "user", "content": "写一个 React 组件，实现一个可以搜索和筛选的用户列表"}
+    ],
+    "stream": false,
+    "temperature": 0.2
+  }'
+```
+
+**推理任务** (DeepSeek-R1)：
+```bash
+curl -X POST https://deepinfra.kyx03.de/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-R1-0528-Turbo",
+    "messages": [
+      {"role": "user", "content": "在一个 8x8 的棋盘上，你有 8 个相同的车子。你需要将它们放置在棋盘上，使得任意两个车子都不能相互攻击。请问有多少种不同的放置方法？"}
+    ],
+    "stream": false,
+    "temperature": 0.1
+  }'
+```
+
+#### 📊 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `model` | string | 必填 | 模型名称 |
+| `messages` | array | 必填 | 对话消息列表 |
+| `stream` | boolean | false | 是否流式输出 |
+| `temperature` | number | 0.7 | 随机性 (0.0-2.0) |
+| `max_tokens` | number | - | 最大输出长度 |
+| `top_p` | number | 1.0 | 核采样 (0.0-1.0) |
+| `frequency_penalty` | number | 0.0 | 频率惩罚 (-2.0-2.0) |
+| `presence_penalty` | number | 0.0 | 存在惩罚 (-2.0-2.0) |
+
+#### 📝 消息角色说明
+
+| 角色 | 说明 | 使用场景 |
+|------|------|----------|
+| `system` | 系统消息 | 设定 AI 的行为和角色 |
+| `user` | 用户消息 | 用户的问题或请求 |
+| `assistant` | AI 回复 | AI 的历史回复（用于上下文） |
+
+#### 🔄 响应格式
+
+**非流式响应**：
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "created": 1677652288,
+  "model": "deepseek-ai/DeepSeek-V3.1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "你好！我是..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 9,
+    "completion_tokens": 12,
+    "total_tokens": 21
+  }
+}
+```
+
+**流式响应**：
+```
+data: {"choices": [{"delta": {"content": "你"}}]}
+
+data: {"choices": [{"delta": {"content": "好"}}]}
+
+data: {"choices": [{"delta": {"content": "！"}}]}
+
+data: [DONE]
+```
+
+## 💻 编程语言使用示例
+
+### 🐍 Python 示例
+
+**安装依赖**：
+```bash
+pip install openai  # 或 pip install requests
+```
+
+**使用 OpenAI SDK**：
+```python
+import openai
+
+# 配置 API
+client = openai.OpenAI(
+    api_key="linux.do",
+    base_url="https://deepinfra.kyx03.de/v1"
+)
+
+# 单轮对话
+response = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V3.1",
+    messages=[
+        {"role": "user", "content": "你好，请介绍一下你自己"}
+    ],
+    temperature=0.7
+)
+
+print(response.choices[0].message.content)
+
+# 流式对话
+stream = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V3.1",
+    messages=[
+        {"role": "user", "content": "请给我讲一个故事"}
+    ],
+    stream=True
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content is not None:
+        print(chunk.choices[0].delta.content, end="")
+```
+
+**使用 requests 库**：
+```python
+import requests
+import json
+
+def chat_with_ai(message, model="deepseek-ai/DeepSeek-V3.1"):
+    url = "https://deepinfra.kyx03.de/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer linux.do"
+    }
+    data = {
+        "model": model,
+        "messages": [{"role": "user", "content": message}],
+        "stream": False
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"]
+    else:
+        return f"错误: {response.status_code} - {response.text}"
+
+# 使用示例
+result = chat_with_ai("你好，请解释一下机器学习")
+print(result)
+```
+
+### 🔥 JavaScript/Node.js 示例
+
+**安装依赖**：
+```bash
+npm install openai  # 或 yarn add openai
+```
+
+**使用 OpenAI SDK**：
+```javascript
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  apiKey: 'linux.do',
+  baseURL: 'https://deepinfra.kyx03.de/v1'
+});
+
+// 异步对话
+async function chatWithAI(message) {
+  try {
+    const response = await client.chat.completions.create({
+      model: 'deepseek-ai/DeepSeek-V3.1',
+      messages: [{ role: 'user', content: message }],
+      temperature: 0.7
+    });
+    
+    return response.choices[0].message.content;
+  } catch (error) {
+    console.error('请求失败:', error);
+    return null;
+  }
+}
+
+// 流式对话
+async function streamChat(message) {
+  try {
+    const stream = await client.chat.completions.create({
+      model: 'deepseek-ai/DeepSeek-V3.1',
+      messages: [{ role: 'user', content: message }],
+      stream: true
+    });
+    
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        process.stdout.write(content);
+      }
+    }
+  } catch (error) {
+    console.error('流式请求失败:', error);
+  }
+}
+
+// 使用示例
+chatWithAI('你好，请介绍一下人工智能').then(console.log);
+streamChat('请给我讲一个关于AI的故事');
+```
+
+### 🤖 多轮对话示例
+
+**Python 多轮对话类**：
+```python
+class ChatBot:
+    def __init__(self, api_key="linux.do", base_url="https://deepinfra.kyx03.de/v1"):
+        self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        self.messages = []
+        
+    def set_system_prompt(self, prompt):
+        """设置系统提示词"""
+        self.messages = [{"role": "system", "content": prompt}]
+        
+    def chat(self, user_input, model="deepseek-ai/DeepSeek-V3.1"):
+        """发送消息并获取回复"""
+        self.messages.append({"role": "user", "content": user_input})
+        
+        response = self.client.chat.completions.create(
+            model=model,
+            messages=self.messages,
+            temperature=0.7
+        )
+        
+        assistant_reply = response.choices[0].message.content
+        self.messages.append({"role": "assistant", "content": assistant_reply})
+        
+        return assistant_reply
+    
+    def clear_history(self):
+        """清除对话历史"""
+        self.messages = [msg for msg in self.messages if msg["role"] == "system"]
+
+# 使用示例
+bot = ChatBot()
+bot.set_system_prompt("你是一个专业的编程助手，请用简洁明了的语言回答问题。")
+
+print(bot.chat("什么是 Python？"))
+print(bot.chat("请给我一个简单的例子"))
+print(bot.chat("如何处理异常？"))
+```
+
+### 🌐 前端网页示例
+
+**HTML + JavaScript**：
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DeepInfra 聊天机器人</title>
+    <style>
+        .chat-container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .message { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .user-message { background: #e3f2fd; text-align: right; }
+        .bot-message { background: #f1f8e9; }
+        #input { width: 80%; padding: 10px; }
+        #send { padding: 10px 20px; }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div id="messages"></div>
+        <input type="text" id="input" placeholder="输入你的消息...">
+        <button id="send">发送</button>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        
+        async function sendMessage() {
+            const message = input.value.trim();
+            if (!message) return;
+            
+            // 显示用户消息
+            addMessage(message, 'user');
+            input.value = '';
+            
+            try {
+                const response = await fetch('https://deepinfra.kyx03.de/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer linux.do'
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek-ai/DeepSeek-V3.1',
+                        messages: [{ role: 'user', content: message }],
+                        stream: false
+                    })
+                });
+                
+                const data = await response.json();
+                const reply = data.choices[0].message.content;
+                addMessage(reply, 'bot');
+            } catch (error) {
+                addMessage('抱歉，发生了错误：' + error.message, 'bot');
+            }
+        }
+        
+        function addMessage(text, sender) {
+            const div = document.createElement('div');
+            div.className = `message ${sender}-message`;
+            div.textContent = text;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        sendBtn.addEventListener('click', sendMessage);
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html>
 ```
 
 ## 🔧 配置说明
