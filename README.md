@@ -53,7 +53,7 @@ Deepinfra2api/
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/DeepInfra2API.git
+git clone https://github.com/james-6-23/DeepInfra2API.git
 cd DeepInfra2API
 
 # 2. 复制配置模板
