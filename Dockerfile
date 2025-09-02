@@ -17,4 +17,4 @@ EXPOSE 8000
 ENV PORT=8000
 
 # 启动应用
-CMD ["deno", "run", "--allow-net", "--allow-env", "app.ts"]
+CMD ["deno", "run", "--allow-net", "--allow-env", "app.ts"] 
