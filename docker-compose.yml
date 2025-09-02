@@ -29,7 +29,9 @@ services:
       - warp
 
   deepinfra-proxy:
-    build: .
+    build:
+      context: .
+      network: host  # 使用主机网络进行构建，避免DNS问题
     container_name: ${BACKEND_HOST:-deepinfra-proxy}
     restart: unless-stopped
     environment:
