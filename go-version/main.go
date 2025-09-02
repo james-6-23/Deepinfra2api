@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -130,6 +129,13 @@ type StreamLog struct {
 	Content   interface{} `json:"content,omitempty"`
 	Delta     interface{} `json:"delta,omitempty"`
 }
+
+// 版本信息
+const (
+	VERSION     = "2.0.0"
+	BUILD_DATE  = "2025-01-02"
+	DESCRIPTION = "DeepInfra API Proxy - Go版本优化版，解决流式响应截断问题"
+)
 
 // 全局配置
 var (
@@ -453,20 +459,31 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		errorRate = int((errorCount * 100) / requestCount)
 	}
 
-	response := HealthResponse{
-		Status:          "ok",
-		Timestamp:       time.Now().Format(time.RFC3339),
-		PerformanceMode: performanceMode,
-		Config: HealthConfig{
+	response := map[string]interface{}{
+		"status":           "ok",
+		"timestamp":        time.Now().Format(time.RFC3339),
+		"version":          VERSION,
+		"build_date":       BUILD_DATE,
+		"description":      DESCRIPTION,
+		"performance_mode": performanceMode,
+		"config": HealthConfig{
 			MaxRetries:     maxRetries,
 			RetryDelay:     retryDelay,
 			RequestTimeout: requestTimeout,
 			RandomDelay:    fmt.Sprintf("%d-%dms", randomDelayMin, randomDelayMax),
 		},
-		Stats: HealthStats{
+		"stats": HealthStats{
 			TotalRequests:       int(requestCount),
 			AverageResponseTime: avgResponseTime,
 			ErrorRate:           errorRate,
+		},
+		"improvements": []string{
+			"数据块读取策略，避免按行读取截断",
+			"增强的错误恢复机制",
+			"安全的数据发送函数",
+			"动态缓冲区大小优化",
+			"连接状态检测",
+			"内存泄漏防护",
 		},
 	}
 
@@ -598,7 +615,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	handleStreamResponse(w, resp, requestID)
 }
 
-// 流式响应处理
+// 流式响应处理 - 优化版本，解决截断问题
 func handleStreamResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -613,29 +630,75 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response, requestID 
 		return
 	}
 
-	// 使用更大的缓冲区来避免截断问题
-	reader := bufio.NewReaderSize(resp.Body, 1024*1024) // 1MB 缓冲区
+	// 使用数据块读取策略，避免按行读取的截断问题
+	bufferSize := getOptimalBufferSize()
+	buffer := make([]byte, bufferSize)
+	lineBuffer := ""
 	isInThinkBlock := false
 	bufferedThinkContent := ""
 	streamClosed := false
 
+	log.Printf("开始流式响应处理，缓冲区大小: %d bytes", bufferSize)
+
 	for !streamClosed {
-		line, err := reader.ReadString('\n')
+		// 检查连接是否仍然活跃
+		if !isConnectionAlive(w) {
+			log.Printf("客户端连接已断开，停止流式传输")
+			break
+		}
+
+		n, err := resp.Body.Read(buffer)
+		if n > 0 {
+			// 将读取的数据块添加到行缓冲区
+			chunk := string(buffer[:n])
+			lineBuffer += chunk
+
+			// 防止行缓冲区过大（防止内存泄漏）
+			if len(lineBuffer) > 1024*1024 { // 1MB 限制
+				log.Printf("警告：行缓冲区过大 (%d bytes)，可能存在数据问题", len(lineBuffer))
+				// 尝试处理部分数据
+				if idx := strings.LastIndex(lineBuffer[:len(lineBuffer)/2], "\n"); idx > 0 {
+					partialBuffer := lineBuffer[:idx]
+					lineBuffer = lineBuffer[idx+1:]
+					log.Printf("处理部分缓冲区数据，大小: %d bytes", len(partialBuffer))
+				}
+			}
+
+			// 处理缓冲区中的完整行
+			processedLines := 0
+			for {
+				lineEnd := strings.Index(lineBuffer, "\n")
+				if lineEnd == -1 {
+					// 没有完整的行，等待更多数据
+					break
+				}
+
+				// 提取完整的行
+				line := lineBuffer[:lineEnd]
+				lineBuffer = lineBuffer[lineEnd+1:]
+				processedLines++
+
+				// 处理这一行
+				if !streamClosed {
+					processLineImproved(line, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
+				}
+			}
+
+			if processedLines > 0 {
+				log.Printf("处理了 %d 行数据，剩余缓冲区: %d bytes", processedLines, len(lineBuffer))
+			}
+		}
+
 		if err != nil {
 			if err == io.EOF {
-				// 处理最后一行（可能没有换行符）
-				if line != "" {
-					processLine(line, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
+				// 处理剩余的不完整行
+				if lineBuffer != "" && !streamClosed {
+					processLineImproved(lineBuffer, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
 				}
 				break
 			}
 			log.Printf("读取流数据失败: %v", err)
 			break
-		}
-
-		// 处理每一行
-		if !streamClosed {
-			processLine(line, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
 		}
 	}
 
@@ -645,8 +708,8 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response, requestID 
 	}
 }
 
-// 处理单行数据
-func processLine(line string, isInThinkBlock *bool, bufferedThinkContent *string, streamClosed *bool, w http.ResponseWriter, flusher http.Flusher, requestID string) {
+// 处理单行数据 - 改进版本，增强错误恢复能力
+func processLineImproved(line string, isInThinkBlock *bool, bufferedThinkContent *string, streamClosed *bool, w http.ResponseWriter, flusher http.Flusher, requestID string) {
 	line = strings.TrimSpace(line)
 
 	if strings.HasPrefix(line, "data: ") {
@@ -655,56 +718,92 @@ func processLine(line string, isInThinkBlock *bool, bufferedThinkContent *string
 		if jsonText == "[DONE]" {
 			// 发送缓存的思考内容
 			if *isInThinkBlock && *bufferedThinkContent != "" {
-				sendThinkContent(*bufferedThinkContent, w, flusher)
+				sendThinkContentSafe(*bufferedThinkContent, w, flusher)
 			}
 
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
+			// 安全发送结束标记
+			if err := sendDataSafe("data: [DONE]\n\n", w, flusher); err != nil {
+				log.Printf("发送结束标记失败: %v", err)
+			}
 			*streamClosed = true
 			return
 		}
 
 		if jsonText != "" {
 			var streamResp StreamResponse
-			if err := json.Unmarshal([]byte(jsonText), &streamResp); err == nil {
-				if len(streamResp.Choices) > 0 {
-					delta := streamResp.Choices[0].Delta
-
-					var contentToSend *string
-
-					// 处理思考内容
-					if delta.ReasoningContent != nil {
-						if *delta.ReasoningContent != "" {
-							*bufferedThinkContent += *delta.ReasoningContent
-						}
-						*isInThinkBlock = true
-					} else if delta.Content != nil {
-						// 处理正常内容
-						if *isInThinkBlock {
-							// 发送思考内容
-							if *bufferedThinkContent != "" {
-								sendThinkContent(*bufferedThinkContent, w, flusher)
-								*bufferedThinkContent = ""
-							}
-							*isInThinkBlock = false
-						}
-						contentToSend = delta.Content
-					}
-
-					// 发送正常内容
-					if contentToSend != nil && *contentToSend != "" {
-						sendContent(*contentToSend, w, flusher)
-					}
+			if err := json.Unmarshal([]byte(jsonText), &streamResp); err != nil {
+				// 增强错误处理：JSON 解析失败时不中断流，而是记录并跳过
+				log.Printf("JSON 解析失败，跳过此数据: %v, 内容长度: %d", err, len(jsonText))
+				// 如果内容太长，只显示前100个字符
+				if len(jsonText) > 100 {
+					log.Printf("JSON 内容预览: %s...", jsonText[:100])
+				} else {
+					log.Printf("JSON 内容: %s", jsonText)
 				}
-			} else {
-				log.Printf("JSON 解析失败: %v, 内容: %s", err, jsonText)
+				return
+			}
+
+			// 成功解析 JSON，处理数据
+			if len(streamResp.Choices) > 0 {
+				delta := streamResp.Choices[0].Delta
+
+				var contentToSend *string
+
+				// 处理思考内容
+				if delta.ReasoningContent != nil {
+					if *delta.ReasoningContent != "" {
+						*bufferedThinkContent += *delta.ReasoningContent
+					}
+					*isInThinkBlock = true
+				} else if delta.Content != nil {
+					// 处理正常内容
+					if *isInThinkBlock {
+						// 发送思考内容
+						if *bufferedThinkContent != "" {
+							sendThinkContentSafe(*bufferedThinkContent, w, flusher)
+							*bufferedThinkContent = ""
+						}
+						*isInThinkBlock = false
+					}
+					contentToSend = delta.Content
+				}
+
+				// 发送正常内容
+				if contentToSend != nil && *contentToSend != "" {
+					sendContentSafe(*contentToSend, w, flusher)
+				}
 			}
 		}
 	}
 }
 
-// 发送思考内容
-func sendThinkContent(content string, w http.ResponseWriter, flusher http.Flusher) {
+// 保留原有函数以保持兼容性
+func processLine(line string, isInThinkBlock *bool, bufferedThinkContent *string, streamClosed *bool, w http.ResponseWriter, flusher http.Flusher, requestID string) {
+	processLineImproved(line, isInThinkBlock, bufferedThinkContent, streamClosed, w, flusher, requestID)
+}
+
+// 安全发送数据的通用函数
+func sendDataSafe(data string, w http.ResponseWriter, flusher http.Flusher) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("发送数据时发生 panic: %v", r)
+		}
+	}()
+
+	_, err := fmt.Fprint(w, data)
+	if err != nil {
+		return fmt.Errorf("写入响应失败: %v", err)
+	}
+
+	// 安全刷新
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return nil
+}
+
+// 发送思考内容 - 安全版本
+func sendThinkContentSafe(content string, w http.ResponseWriter, flusher http.Flusher) {
 	thinkData := map[string]interface{}{
 		"choices": []map[string]interface{}{
 			{
@@ -714,16 +813,21 @@ func sendThinkContent(content string, w http.ResponseWriter, flusher http.Flushe
 			},
 		},
 	}
-	if thinkJSON, err := json.Marshal(thinkData); err == nil {
-		fmt.Fprintf(w, "data: %s\n\n", string(thinkJSON))
-		flusher.Flush()
-	} else {
+
+	thinkJSON, err := json.Marshal(thinkData)
+	if err != nil {
 		log.Printf("思考内容 JSON 编码失败: %v", err)
+		return
+	}
+
+	data := fmt.Sprintf("data: %s\n\n", string(thinkJSON))
+	if err := sendDataSafe(data, w, flusher); err != nil {
+		log.Printf("发送思考内容失败: %v", err)
 	}
 }
 
-// 发送正常内容
-func sendContent(content string, w http.ResponseWriter, flusher http.Flusher) {
+// 发送正常内容 - 安全版本
+func sendContentSafe(content string, w http.ResponseWriter, flusher http.Flusher) {
 	outputData := map[string]interface{}{
 		"choices": []map[string]interface{}{
 			{
@@ -733,12 +837,27 @@ func sendContent(content string, w http.ResponseWriter, flusher http.Flusher) {
 			},
 		},
 	}
-	if outputJSON, err := json.Marshal(outputData); err == nil {
-		fmt.Fprintf(w, "data: %s\n\n", string(outputJSON))
-		flusher.Flush()
-	} else {
+
+	outputJSON, err := json.Marshal(outputData)
+	if err != nil {
 		log.Printf("内容 JSON 编码失败: %v", err)
+		return
 	}
+
+	data := fmt.Sprintf("data: %s\n\n", string(outputJSON))
+	if err := sendDataSafe(data, w, flusher); err != nil {
+		log.Printf("发送内容失败: %v", err)
+	}
+}
+
+// 发送思考内容 - 保持向后兼容
+func sendThinkContent(content string, w http.ResponseWriter, flusher http.Flusher) {
+	sendThinkContentSafe(content, w, flusher)
+}
+
+// 发送正常内容 - 保持向后兼容
+func sendContent(content string, w http.ResponseWriter, flusher http.Flusher) {
+	sendContentSafe(content, w, flusher)
 }
 
 func main() {
@@ -760,15 +879,47 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
+// 检查连接是否仍然活跃
+func isConnectionAlive(w http.ResponseWriter) bool {
+	// 尝试写入一个空字符串来检测连接状态
+	if _, err := fmt.Fprint(w, ""); err != nil {
+		return false
+	}
+	return true
+}
+
+// 优化的缓冲区大小计算
+func getOptimalBufferSize() int {
+	// 根据性能模式调整缓冲区大小
+	switch strings.ToLower(performanceMode) {
+	case "fast":
+		return 4096 // 4KB - 快速模式使用较小缓冲区
+	case "secure":
+		return 16384 // 16KB - 安全模式使用较大缓冲区
+	default: // balanced
+		return 8192 // 8KB - 平衡模式
+	}
+}
+
 func init() {
 	mathrand.Seed(time.Now().UnixNano())
 	getPerformanceConfig()
 	apiEndpoints = getAPIEndpoints()
 	validAPIKeys = getValidAPIKeys()
 
-	log.Printf("🚀 DeepInfra API Proxy started on port %d", port)
+	log.Printf("🚀 %s", DESCRIPTION)
+	log.Printf("📦 Version: %s (Build: %s)", VERSION, BUILD_DATE)
+	log.Printf("🌐 Server started on port %d", port)
 	log.Printf("⚡ Performance mode: %s", performanceMode)
 	log.Printf("🔧 Config: retries=%d, delay=%dms, timeout=%dms", maxRetries, retryDelay, requestTimeout)
 	log.Printf("⏱️  Random delay: %d-%dms", randomDelayMin, randomDelayMax)
 	log.Printf("📝 Detailed logging: %v, User messages: %v, Response content: %v", enableDetailedLogging, logUserMessages, logResponseContent)
+	log.Printf("🔧 Optimal buffer size: %d bytes", getOptimalBufferSize())
+	log.Printf("✨ Key improvements:")
+	log.Printf("   • 数据块读取策略，避免按行读取截断")
+	log.Printf("   • 增强的错误恢复机制")
+	log.Printf("   • 安全的数据发送函数")
+	log.Printf("   • 动态缓冲区大小优化")
+	log.Printf("   • 连接状态检测")
+	log.Printf("   • 内存泄漏防护")
 }

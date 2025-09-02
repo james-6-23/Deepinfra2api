@@ -41,33 +41,26 @@ check_port_available() {
 
     # 使用多种方法检查端口是否可用
     if command -v netstat >/dev/null 2>&1; then
-        # 使用 netstat 检查 (Windows/Linux)
-        if netstat -an 2>/dev/null | grep -q ":${port} "; then
+        # 使用 netstat 检查
+        if netstat -tuln 2>/dev/null | grep -q ":${port} "; then
             return 1  # 端口被占用
         fi
     elif command -v ss >/dev/null 2>&1; then
-        # 使用 ss 检查（Linux 现代工具）
+        # 使用 ss 检查（更现代的工具）
         if ss -tuln 2>/dev/null | grep -q ":${port} "; then
             return 1  # 端口被占用
         fi
     elif command -v lsof >/dev/null 2>&1; then
-        # 使用 lsof 检查（macOS/Linux）
+        # 使用 lsof 检查
         if lsof -i :${port} >/dev/null 2>&1; then
             return 1  # 端口被占用
         fi
-    fi
-
-    # 最后使用 PowerShell 检查（Windows 兼容）
-    if command -v powershell >/dev/null 2>&1; then
-        if powershell -Command "Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue" 2>/dev/null | grep -q "$port"; then
-            return 1  # 端口被占用
-        fi
-    fi
-
-    # 使用 nc 作为最后手段
-    if command -v nc >/dev/null 2>&1; then
-        if nc -z localhost ${port} 2>/dev/null; then
-            return 1  # 端口被占用
+    else
+        # 使用 nc 或 telnet 作为最后手段
+        if command -v nc >/dev/null 2>&1; then
+            if nc -z localhost ${port} 2>/dev/null; then
+                return 1  # 端口被占用
+            fi
         fi
     fi
 
@@ -106,9 +99,7 @@ get_current_ports() {
 configure_ports() {
     local deployment_type=$1  # "deno", "go", "both"
 
-    echo ""
     echo -e "${CYAN}🔌 端口配置向导${NC}"
-    echo -e "${CYAN}================================${NC}"
     echo "正在扫描可用端口..."
 
     # 获取当前端口配置
@@ -120,16 +111,12 @@ configure_ports() {
     local deno_available=false
     local go_available=false
 
-    if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
-        if check_port_available $current_deno_port; then
-            deno_available=true
-        fi
+    if check_port_available $current_deno_port; then
+        deno_available=true
     fi
 
-    if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
-        if check_port_available $current_go_port; then
-            go_available=true
-        fi
+    if check_port_available $current_go_port; then
+        go_available=true
     fi
 
     echo ""
@@ -171,109 +158,74 @@ configure_ports() {
     if $need_reconfigure; then
         echo -e "${YELLOW}⚠️  检测到端口冲突，需要重新配置端口${NC}"
         echo ""
-        echo -e "${BLUE}请选择处理方式:${NC}"
-        echo "  1) 自动分配可用端口 ${GREEN}(推荐)${NC}"
-        echo "  2) 手动指定端口"
-        echo "  3) 使用默认端口 ${RED}(可能导致冲突)${NC}"
+        echo "请选择处理方式："
+        echo "1) 自动分配可用端口"
+        echo "2) 手动指定端口"
+        echo "3) 使用默认端口（可能导致冲突）"
         echo ""
 
-        while true; do
-            read -p "请选择 (1-3): " port_choice
+        read -p "请选择 (1-3): " port_choice
 
-            case $port_choice in
-                1)
-                    echo ""
-                    if auto_assign_ports "$deployment_type"; then
-                        break
-                    else
-                        echo -e "${RED}❌ 自动分配失败，请选择其他方式${NC}"
-                        echo ""
-                    fi
-                    ;;
-                2)
-                    echo ""
-                    if manual_assign_ports "$deployment_type"; then
-                        break
-                    else
-                        echo -e "${RED}❌ 手动配置失败，请重试${NC}"
-                        echo ""
-                    fi
-                    ;;
-                3)
-                    echo ""
-                    echo -e "${YELLOW}⚠️  使用默认端口，可能存在冲突风险${NC}"
-                    break
-                    ;;
-                *)
-                    echo -e "${RED}❌ 无效选择，请输入 1、2 或 3${NC}"
-                    ;;
-            esac
-        done
+        case $port_choice in
+            1)
+                auto_assign_ports "$deployment_type"
+                ;;
+            2)
+                manual_assign_ports "$deployment_type"
+                ;;
+            3)
+                echo -e "${YELLOW}⚠️  使用默认端口，可能存在冲突风险${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}⚠️  无效选择，使用自动分配${NC}"
+                auto_assign_ports "$deployment_type"
+                ;;
+        esac
     else
         echo -e "${GREEN}✅ 所有端口都可用，无需重新配置${NC}"
     fi
-
-    echo ""
 }
 
 # 自动分配端口
 auto_assign_ports() {
     local deployment_type=$1
-    local success=true
 
     echo -e "${BLUE}🔍 自动扫描可用端口...${NC}"
 
     if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
-        echo "  正在为 Deno 版本查找可用端口..."
         local new_deno_port=$(find_available_port 8000)
-        if [ $? -eq 0 ] && [ -n "$new_deno_port" ]; then
+        if [ $? -eq 0 ]; then
             update_env_var "DENO_PORT" "$new_deno_port"
             echo -e "  Deno 端口: ${GREEN}$new_deno_port${NC}"
         else
-            echo -e "  ${RED}❌ 无法找到 Deno 可用端口 (尝试范围: 8000-8049)${NC}"
-            success=false
+            echo -e "  ${RED}❌ 无法找到 Deno 可用端口${NC}"
+            return 1
         fi
     fi
 
     if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
-        echo "  正在为 Go 版本查找可用端口..."
         local new_go_port=$(find_available_port 8001)
-        if [ $? -eq 0 ] && [ -n "$new_go_port" ]; then
+        if [ $? -eq 0 ]; then
             update_env_var "GO_PORT" "$new_go_port"
             echo -e "  Go 端口: ${GREEN}$new_go_port${NC}"
         else
-            echo -e "  ${RED}❌ 无法找到 Go 可用端口 (尝试范围: 8001-8050)${NC}"
-            success=false
+            echo -e "  ${RED}❌ 无法找到 Go 可用端口${NC}"
+            return 1
         fi
     fi
 
-    if $success; then
-        echo -e "${GREEN}✅ 端口自动配置完成${NC}"
-        return 0
-    else
-        echo -e "${RED}❌ 端口自动配置失败${NC}"
-        return 1
-    fi
+    echo -e "${GREEN}✅ 端口自动配置完成${NC}"
 }
 
 # 手动分配端口
 manual_assign_ports() {
     local deployment_type=$1
-    local success=true
 
     echo -e "${BLUE}✏️  手动端口配置${NC}"
-    echo -e "${YELLOW}提示: 端口范围建议 1024-65535，避免使用系统保留端口${NC}"
-    echo ""
 
     if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
-        local attempts=0
-        while [ $attempts -lt 3 ]; do
-            read -p "请输入 Deno 版本端口 (建议 8000-8099，回车使用默认 8000): " deno_port
-
-            # 如果用户直接回车，使用默认端口
-            if [ -z "$deno_port" ]; then
-                deno_port=8000
-            fi
+        while true; do
+            read -p "请输入 Deno 版本端口 (建议 8000-8099): " deno_port
 
             if [[ "$deno_port" =~ ^[0-9]+$ ]] && [ "$deno_port" -ge 1024 ] && [ "$deno_port" -le 65535 ]; then
                 if check_port_available "$deno_port"; then
@@ -282,29 +234,16 @@ manual_assign_ports() {
                     break
                 else
                     echo -e "  ${RED}❌ 端口 $deno_port 已被占用，请选择其他端口${NC}"
-                    attempts=$((attempts + 1))
                 fi
             else
                 echo -e "  ${RED}❌ 无效端口号，请输入 1024-65535 之间的数字${NC}"
-                attempts=$((attempts + 1))
-            fi
-
-            if [ $attempts -eq 3 ]; then
-                echo -e "  ${RED}❌ 尝试次数过多，Deno 端口配置失败${NC}"
-                success=false
             fi
         done
     fi
 
     if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
-        local attempts=0
-        while [ $attempts -lt 3 ]; do
-            read -p "请输入 Go 版本端口 (建议 8001-8099，回车使用默认 8001): " go_port
-
-            # 如果用户直接回车，使用默认端口
-            if [ -z "$go_port" ]; then
-                go_port=8001
-            fi
+        while true; do
+            read -p "请输入 Go 版本端口 (建议 8001-8099): " go_port
 
             if [[ "$go_port" =~ ^[0-9]+$ ]] && [ "$go_port" -ge 1024 ] && [ "$go_port" -le 65535 ]; then
                 if check_port_available "$go_port"; then
@@ -313,27 +252,14 @@ manual_assign_ports() {
                     break
                 else
                     echo -e "  ${RED}❌ 端口 $go_port 已被占用，请选择其他端口${NC}"
-                    attempts=$((attempts + 1))
                 fi
             else
                 echo -e "  ${RED}❌ 无效端口号，请输入 1024-65535 之间的数字${NC}"
-                attempts=$((attempts + 1))
-            fi
-
-            if [ $attempts -eq 3 ]; then
-                echo -e "  ${RED}❌ 尝试次数过多，Go 端口配置失败${NC}"
-                success=false
             fi
         done
     fi
 
-    if $success; then
-        echo -e "${GREEN}✅ 端口手动配置完成${NC}"
-        return 0
-    else
-        echo -e "${RED}❌ 端口手动配置失败${NC}"
-        return 1
-    fi
+    echo -e "${GREEN}✅ 端口手动配置完成${NC}"
 }
 
 
