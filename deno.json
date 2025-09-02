@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true
+  },
+  "fmt": {
+    "files": {
+      "include": ["index.ts"]
+    },
+    "options": {
+      "useTabs": false,
+      "lineWidth": 80,
+      "indentWidth": 2,
+      "semiColons": true,
+      "singleQuote": false,
+      "proseWrap": "preserve"
+    }
+  },
+  "lint": {
+    "files": {
+      "include": ["index.ts"]
+    },
+    "rules": {
+      "tags": ["recommended"]
+    }
+  },
+  "tasks": {
+    "start": "deno run --allow-net index.ts",
+    "dev": "deno run --allow-net --watch index.ts"
+  }
+}

@@ -1,5 +1,32 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
+// 类型定义
+interface ChatMessage {
+  role: string;
+  content: string;
+}
+
+interface ChatRequest {
+  model: string;
+  messages: ChatMessage[];
+  stream?: boolean;
+  temperature?: number;
+  max_tokens?: number;
+}
+
+interface Delta {
+  content?: string | null;
+  reasoning_content?: string | null;
+}
+
+interface Choice {
+  delta: Delta;
+}
+
+interface StreamResponse {
+  choices: Choice[];
+}
+
 const DEEPINFRA_URL = "https://api.deepinfra.com/v1/openai/chat/completions";
 const PORT = 8000;
 
@@ -41,10 +68,21 @@ serve(async (req: Request) => {
     const auth = headers.get("Authorization");
     const key = auth?.replace("Bearer ", "").trim();
     if (!key || !VALID_API_KEYS.includes(key)) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
-    const parsed = JSON.parse(body);
+    let parsed: ChatRequest;
+    try {
+      parsed = JSON.parse(body) as ChatRequest;
+    } catch (error) {
+      return new Response(JSON.stringify({ error: "Invalid JSON format" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
     const isStream = parsed.stream === true;
 
     // ✅ 构造伪造请求头（模拟匿名访问）
@@ -56,11 +94,20 @@ serve(async (req: Request) => {
       "x-deepinfra-source": "web-page"
     };
 
-    const response = await fetch(DEEPINFRA_URL, {
-      method: "POST",
-      headers: forwardHeaders,
-      body
-    });
+    let response: Response;
+    try {
+      response = await fetch(DEEPINFRA_URL, {
+        method: "POST",
+        headers: forwardHeaders,
+        body
+      });
+    } catch (error) {
+      console.error('请求 DeepInfra API 失败:', error);
+      return new Response(JSON.stringify({ error: "External API request failed" }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
 
     if (!isStream) {
       const result = await response.text();
@@ -98,11 +145,13 @@ serve(async (req: Request) => {
                 break;
               }
               try {
-                const parsed = JSON.parse(jsonText);
-                const delta = parsed.choices[0].delta;
+                const parsed = JSON.parse(jsonText) as StreamResponse;
+                const delta = parsed.choices?.[0]?.delta;
+                
+                if (!delta) continue;
                 
                 // ✅ 处理 reasoning_content 和 content
-                let contentToSend = null;
+                let contentToSend: string | null = null;
                 let isThinkContent = false;
 
                 // 检查是否是思考内容
@@ -141,8 +190,9 @@ serve(async (req: Request) => {
                   controller.enqueue(new TextEncoder().encode(output));
                 }
                 
-              } catch (_) {
-                // 忽略解析错误
+              } catch (error) {
+                console.warn('JSON 解析错误:', error);
+                // 继续处理其他块
               }
             }
           }
