@@ -12,13 +12,23 @@ services:
       - PERFORMANCE_MODE=balanced
       - MAX_RETRIES=3
       - RETRY_DELAY=1000
-      - REQUEST_TIMEOUT=30000
+      - REQUEST_TIMEOUT=120000  # 2 分钟请求超时
+      - STREAM_TIMEOUT=300000   # 5 分钟流式响应超时
       - RANDOM_DELAY_MIN=100
       - RANDOM_DELAY_MAX=500
       - ENABLE_DETAILED_LOGGING=true
       - LOG_USER_MESSAGES=false
       - LOG_RESPONSE_CONTENT=false
       - VALID_API_KEYS=linux.do
+      # 流处理优化配置
+      - STREAM_BUFFER_SIZE=16384
+      - DISABLE_CONNECTION_CHECK=false  # 启用智能连接检测
+      # 高并发优化配置
+      - MAX_CONCURRENT_CONNECTIONS=1000
+      - CONNECTION_QUEUE_SIZE=500
+      - MAX_CONNECTION_TIME=600000
+      - MEMORY_LIMIT_MB=2048
+      - ENABLE_METRICS=true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

@@ -34,6 +34,32 @@ update_env_var() {
     fi
 }
 
+# 取消注释环境变量函数
+uncomment_env_var() {
+    local var_name=$1
+    local var_value=$2
+
+    # 先尝试取消注释已存在的变量
+    if grep -q "^# ${var_name}=" .env; then
+        sed -i "s|^# ${var_name}=.*|${var_name}=${var_value}|" .env
+    elif grep -q "^#${var_name}=" .env; then
+        sed -i "s|^#${var_name}=.*|${var_name}=${var_value}|" .env
+    else
+        # 如果没找到注释的变量，调用常规更新函数
+        update_env_var "$var_name" "$var_value"
+    fi
+}
+
+# 注释环境变量函数
+comment_env_var() {
+    local var_name=$1
+
+    # 如果变量存在且未被注释，则注释它
+    if grep -q "^${var_name}=" .env; then
+        sed -i "s|^${var_name}=|# ${var_name}=|" .env
+    fi
+}
+
 # 端口扫描和管理函数
 check_port_available() {
     local port=$1
@@ -436,16 +462,22 @@ show_menu() {
     echo "  7) Go + WARP 代理"
     echo "  8) Go + 多端点 + WARP 代理"
     echo ""
-    echo -e "${YELLOW}🔄 双版本部署${NC}"
-    echo "  9) 双版本基础部署"
-    echo "  10) 双版本 + 多端点负载均衡"
-    echo "  11) 双版本 + WARP 代理"
-    echo "  12) 双版本 + 多端点 + WARP 代理"
+    echo -e "${YELLOW}� Go 高并发版本 (端口 8001) - 企业级高性能${NC}"
+    echo "  9) Go 高并发基础版 (1000并发)"
+    echo "  10) Go 高并发 + 多端点 (2000并发)"
+    echo "  11) Go 高并发 + WARP (1000并发)"
+    echo "  12) Go 高并发完整版 (3000并发)"
+    echo ""
+    echo -e "${YELLOW}�🔄 双版本部署${NC}"
+    echo "  13) 双版本基础部署"
+    echo "  14) 双版本 + 多端点负载均衡"
+    echo "  15) 双版本 + WARP 代理"
+    echo "  16) 双版本 + 多端点 + WARP 代理"
     echo ""
     echo -e "${YELLOW}🛠️ 管理操作${NC}"
-    echo "  13) 测试部署"
-    echo "  14) 查看服务状态"
-    echo "  15) 停止所有服务"
+    echo "  17) 测试部署"
+    echo "  18) 查看服务状态"
+    echo "  19) 停止所有服务"
     echo "  0) 退出"
     echo ""
 }
@@ -455,6 +487,7 @@ deploy_service() {
     local profiles="$1"
     local description="$2"
     local endpoints="$3"
+    local concurrency_config="$4"  # 新增高并发配置参数
 
     echo -e "${BLUE}🚀 $description...${NC}"
 
@@ -469,12 +502,32 @@ deploy_service() {
     # 端口配置检查
     configure_ports "$deployment_type"
 
+    # 配置 WARP 代理（如果需要）
+    if [[ "$profiles" == *"warp"* ]]; then
+        configure_warp_proxy "true"
+    else
+        configure_warp_proxy "false"
+    fi
+
     # 配置多端点（如果需要）
     if [ "$endpoints" = "multi" ]; then
         configure_multi_endpoints
     elif [ "$endpoints" = "single" ]; then
         configure_single_endpoint
     fi
+
+    # 配置高并发（如果需要）
+    case "$concurrency_config" in
+        "high_concurrency_basic")
+            configure_high_concurrency_basic
+            ;;
+        "high_concurrency_medium")
+            configure_high_concurrency_medium
+            ;;
+        "high_concurrency_full")
+            configure_high_concurrency_full
+            ;;
+    esac
 
     # 获取实际端口配置
     local current_ports=($(get_current_ports))
@@ -493,9 +546,27 @@ deploy_service() {
         if [[ "$profiles" == *"go"* ]]; then
             echo -e "${BLUE}🔗 Go 版本: http://localhost:$actual_go_port${NC}"
             echo -e "${BLUE}📊 健康检查: curl http://localhost:$actual_go_port/health${NC}"
+
+            # 高并发版本特殊提示
+            if [[ -n "$concurrency_config" ]]; then
+                echo -e "${BLUE}📈 系统状态监控: curl http://localhost:$actual_go_port/status${NC}"
+                case "$concurrency_config" in
+                    "high_concurrency_basic")
+                        echo -e "${CYAN}🚀 高并发基础版已启用 (1000并发)${NC}"
+                        ;;
+                    "high_concurrency_medium")
+                        echo -e "${CYAN}🚀 高并发中等版已启用 (2000并发)${NC}"
+                        ;;
+                    "high_concurrency_full")
+                        echo -e "${CYAN}🚀 高并发完整版已启用 (3000并发)${NC}"
+                        ;;
+                esac
+                echo -e "${YELLOW}💡 建议监控系统资源使用情况${NC}"
+            fi
         fi
         if [[ "$profiles" == *"warp"* ]]; then
             echo -e "${YELLOW}⏳ WARP 代理需要约 30 秒启动时间${NC}"
+            echo -e "${CYAN}🌐 WARP 代理已启用，环境变量已配置${NC}"
         fi
 
         # 显示端点配置信息
@@ -525,6 +596,93 @@ configure_multi_endpoints() {
     echo -e "${GREEN}✅ 配置为多端点负载均衡模式${NC}"
 }
 
+# 配置高并发基础版 (1000并发)
+configure_high_concurrency_basic() {
+    echo -e "${CYAN}🚀 配置高并发基础版 (1000并发)...${NC}"
+
+    # 基础超时配置
+    update_env_var "REQUEST_TIMEOUT" "120000"
+    update_env_var "STREAM_TIMEOUT" "300000"
+
+    # 高并发配置
+    update_env_var "MAX_CONCURRENT_CONNECTIONS" "1000"
+    update_env_var "STREAM_BUFFER_SIZE" "16384"
+    update_env_var "MEMORY_LIMIT_MB" "2048"
+    update_env_var "DISABLE_CONNECTION_CHECK" "false"
+    update_env_var "CONNECTION_CHECK_INTERVAL" "20"
+    update_env_var "ENABLE_METRICS" "true"
+
+    echo -e "${GREEN}✅ 高并发基础版配置完成 (1000并发)${NC}"
+}
+
+# 配置高并发中等版 (2000并发)
+configure_high_concurrency_medium() {
+    echo -e "${CYAN}🚀 配置高并发中等版 (2000并发)...${NC}"
+
+    # 优化超时配置
+    update_env_var "REQUEST_TIMEOUT" "90000"
+    update_env_var "STREAM_TIMEOUT" "240000"
+
+    # 高并发配置
+    update_env_var "MAX_CONCURRENT_CONNECTIONS" "2000"
+    update_env_var "STREAM_BUFFER_SIZE" "32768"
+    update_env_var "MEMORY_LIMIT_MB" "4096"
+    update_env_var "DISABLE_CONNECTION_CHECK" "false"
+    update_env_var "CONNECTION_CHECK_INTERVAL" "30"
+    update_env_var "ENABLE_METRICS" "true"
+
+    echo -e "${GREEN}✅ 高并发中等版配置完成 (2000并发)${NC}"
+}
+
+# 配置高并发完整版 (3000并发)
+configure_high_concurrency_full() {
+    echo -e "${CYAN}🚀 配置高并发完整版 (3000并发)...${NC}"
+
+    # 高性能超时配置
+    update_env_var "REQUEST_TIMEOUT" "60000"
+    update_env_var "STREAM_TIMEOUT" "180000"
+
+    # 高并发配置
+    update_env_var "MAX_CONCURRENT_CONNECTIONS" "3000"
+    update_env_var "STREAM_BUFFER_SIZE" "65536"
+    update_env_var "MEMORY_LIMIT_MB" "6144"
+    update_env_var "DISABLE_CONNECTION_CHECK" "true"
+    update_env_var "CONNECTION_CHECK_INTERVAL" "50"
+    update_env_var "ENABLE_METRICS" "true"
+
+    echo -e "${GREEN}✅ 高并发完整版配置完成 (3000并发)${NC}"
+}
+
+# 配置 WARP 代理
+configure_warp_proxy() {
+    local enable_warp=$1  # true 或 false
+
+    if [ "$enable_warp" = "true" ]; then
+        echo -e "${CYAN}🔧 正在启用 WARP 代理配置...${NC}"
+        
+        # 启用 WARP 服务
+        update_env_var "WARP_ENABLED" "true"
+        
+        # 取消注释并配置代理环境变量
+        uncomment_env_var "HTTP_PROXY" "http://deepinfra-warp:1080"
+        uncomment_env_var "HTTPS_PROXY" "http://deepinfra-warp:1080"
+        
+        echo -e "${GREEN}✅ WARP 代理已启用${NC}"
+        echo -e "${YELLOW}⚠️  WARP 代理需要约 30 秒启动时间${NC}"
+    else
+        echo -e "${CYAN}🔧 正在禁用 WARP 代理配置...${NC}"
+        
+        # 禁用 WARP 服务
+        update_env_var "WARP_ENABLED" "false"
+        
+        # 注释代理环境变量
+        comment_env_var "HTTP_PROXY"
+        comment_env_var "HTTPS_PROXY"
+        
+        echo -e "${GREEN}✅ WARP 代理已禁用${NC}"
+    fi
+}
+
 # 处理用户选择
 handle_choice() {
     local choice=$1
@@ -538,15 +696,19 @@ handle_choice() {
         6) deploy_service "--profile go" "Go + 多端点部署" "multi" ;;
         7) deploy_service "--profile warp --profile go" "Go + WARP 代理部署" "single" ;;
         8) deploy_service "--profile warp --profile go" "Go + 多端点 + WARP 代理部署" "multi" ;;
-        9) deploy_service "--profile deno --profile go" "双版本基础部署" "single" ;;
-        10) deploy_service "--profile deno --profile go" "双版本 + 多端点部署" "multi" ;;
-        11) deploy_service "--profile warp --profile deno --profile go" "双版本 + WARP 代理部署" "single" ;;
-        12) deploy_service "--profile warp --profile deno --profile go" "双版本 + 多端点 + WARP 代理部署" "multi" ;;
-        13)
+        9) deploy_service "--profile go" "Go 高并发基础版部署 (1000并发)" "single" "high_concurrency_basic" ;;
+        10) deploy_service "--profile go" "Go 高并发 + 多端点部署 (2000并发)" "multi" "high_concurrency_medium" ;;
+        11) deploy_service "--profile warp --profile go" "Go 高并发 + WARP 代理部署 (1000并发)" "single" "high_concurrency_basic" ;;
+        12) deploy_service "--profile warp --profile go" "Go 高并发完整版部署 (3000并发)" "multi" "high_concurrency_full" ;;
+        13) deploy_service "--profile deno --profile go" "双版本基础部署" "single" ;;
+        14) deploy_service "--profile deno --profile go" "双版本 + 多端点部署" "multi" ;;
+        15) deploy_service "--profile warp --profile deno --profile go" "双版本 + WARP 代理部署" "single" ;;
+        16) deploy_service "--profile warp --profile deno --profile go" "双版本 + 多端点 + WARP 代理部署" "multi" ;;
+        17)
             echo -e "${BLUE}🧪 测试部署...${NC}"
             test_deployment
             ;;
-        14)
+        18)
             echo -e "${BLUE}📊 服务状态:${NC}"
             docker compose ps
             echo ""
@@ -555,7 +717,7 @@ handle_choice() {
             echo "  docker compose logs -f deepinfra-proxy-go"
             echo "  docker compose logs -f deepinfra-warp"
             ;;
-        15)
+        19)
             echo -e "${BLUE}🛑 停止所有服务...${NC}"
             if docker compose down; then
                 echo -e "${GREEN}✅ 所有服务已停止${NC}"

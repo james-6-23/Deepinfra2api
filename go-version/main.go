@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -147,8 +149,21 @@ var (
 	maxRetries      int
 	retryDelay      int
 	requestTimeout  int
+	streamTimeout   int // 流式响应专用超时
 	randomDelayMin  int
 	randomDelayMax  int
+
+	// 流处理优化配置
+	streamBufferSize        = getEnvInt("STREAM_BUFFER_SIZE", 16384)
+	disableConnectionCheck  = getEnv("DISABLE_CONNECTION_CHECK", "false") == "true"
+	connectionCheckInterval = getEnvInt("CONNECTION_CHECK_INTERVAL", 20) // 每20次循环检查一次
+
+	// 高并发管理配置
+	maxConcurrentConnections = getEnvInt("MAX_CONCURRENT_CONNECTIONS", 1000)
+	connectionQueueSize      = getEnvInt("CONNECTION_QUEUE_SIZE", 500)
+	maxConnectionTime        = getEnvInt("MAX_CONNECTION_TIME", 600000)
+	memoryLimitMB            = getEnvInt("MEMORY_LIMIT_MB", 2048)
+	enableMetrics            = getEnv("ENABLE_METRICS", "true") == "true"
 
 	// API 端点和密钥
 	apiEndpoints []string
@@ -158,6 +173,10 @@ var (
 	requestCount      int64
 	totalResponseTime int64
 	errorCount        int64
+
+	// 并发控制
+	currentConnections  int64
+	connectionSemaphore chan struct{}
 
 	// 日志配置
 	enableDetailedLogging = getEnv("ENABLE_DETAILED_LOGGING", "true") == "true"
@@ -212,18 +231,21 @@ func getPerformanceConfig() {
 		maxRetries = getEnvInt("MAX_RETRIES", 1)
 		retryDelay = getEnvInt("RETRY_DELAY", 200)
 		requestTimeout = getEnvInt("REQUEST_TIMEOUT", 10000)
+		streamTimeout = getEnvInt("STREAM_TIMEOUT", 60000) // 1 分钟流超时
 		randomDelayMin = getEnvInt("RANDOM_DELAY_MIN", 0)
 		randomDelayMax = getEnvInt("RANDOM_DELAY_MAX", 100)
 	case "secure":
 		maxRetries = getEnvInt("MAX_RETRIES", 5)
 		retryDelay = getEnvInt("RETRY_DELAY", 2000)
 		requestTimeout = getEnvInt("REQUEST_TIMEOUT", 60000)
+		streamTimeout = getEnvInt("STREAM_TIMEOUT", 600000) // 10 分钟流超时
 		randomDelayMin = getEnvInt("RANDOM_DELAY_MIN", 500)
 		randomDelayMax = getEnvInt("RANDOM_DELAY_MAX", 1500)
 	default: // balanced
 		maxRetries = getEnvInt("MAX_RETRIES", 3)
 		retryDelay = getEnvInt("RETRY_DELAY", 1000)
-		requestTimeout = getEnvInt("REQUEST_TIMEOUT", 30000)
+		requestTimeout = getEnvInt("REQUEST_TIMEOUT", 120000) // 2 分钟请求超时
+		streamTimeout = getEnvInt("STREAM_TIMEOUT", 300000)   // 5 分钟流超时
 		randomDelayMin = getEnvInt("RANDOM_DELAY_MIN", 100)
 		randomDelayMax = getEnvInt("RANDOM_DELAY_MAX", 500)
 	}
@@ -564,7 +586,14 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	isStream := chatReq.Stream != nil && *chatReq.Stream
 
 	// 发送请求到 DeepInfra API
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(requestTimeout)*time.Millisecond)
+	// 对于流式请求，使用更长的超时时间
+	timeoutDuration := time.Duration(requestTimeout) * time.Millisecond
+	if isStream {
+		timeoutDuration = time.Duration(streamTimeout) * time.Millisecond
+		log.Printf("🌊 流式请求，使用扩展超时: %v", timeoutDuration)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
 	defer cancel()
 
 	resp, err := fetchWithRetry(ctx, body)
@@ -630,21 +659,26 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response, requestID 
 		return
 	}
 
-	// 使用数据块读取策略，避免按行读取的截断问题
-	bufferSize := getOptimalBufferSize()
-	buffer := make([]byte, bufferSize)
+	// 使用优化的缓冲区大小
+	buffer := make([]byte, streamBufferSize)
 	lineBuffer := ""
 	isInThinkBlock := false
 	bufferedThinkContent := ""
 	streamClosed := false
+	checkCounter := 0 // 连接检测计数器
 
-	log.Printf("开始流式响应处理，缓冲区大小: %d bytes", bufferSize)
+	log.Printf("🌊 开始流式响应处理，缓冲区大小: %d bytes, 连接检测: %v", streamBufferSize, !disableConnectionCheck)
 
 	for !streamClosed {
-		// 检查连接是否仍然活跃
-		if !isConnectionAlive(w) {
-			log.Printf("客户端连接已断开，停止流式传输")
-			break
+		// 智能连接检测：平衡性能和稳定性
+		if !disableConnectionCheck {
+			checkCounter++
+			if checkCounter%connectionCheckInterval == 0 { // 可配置的检查间隔
+				if !isConnectionAlive(w) {
+					log.Printf("客户端连接已断开，停止流式传输")
+					break
+				}
+			}
 		}
 
 		n, err := resp.Body.Read(buffer)
@@ -682,10 +716,15 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response, requestID 
 				if !streamClosed {
 					processLineImproved(line, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
 				}
+
+				// 如果已经关闭流，提前退出
+				if streamClosed {
+					break
+				}
 			}
 
-			if processedLines > 0 {
-				log.Printf("处理了 %d 行数据，剩余缓冲区: %d bytes", processedLines, len(lineBuffer))
+			if processedLines > 0 && enableDetailedLogging {
+				log.Printf("📝 处理了 %d 行数据，剩余缓冲区: %d bytes", processedLines, len(lineBuffer))
 			}
 		}
 
@@ -864,7 +903,8 @@ func main() {
 	// 设置路由
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/v1/models", modelsHandler)
-	http.HandleFunc("/v1/chat/completions", chatHandler)
+	http.HandleFunc("/v1/chat/completions", concurrencyControlMiddleware(chatHandler))
+	http.HandleFunc("/status", statusHandler) // 新增状态监控端点
 
 	// 404 处理
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -876,7 +916,16 @@ func main() {
 	// 启动服务器
 	addr := fmt.Sprintf(":%d", port)
 	log.Printf("🌐 Server listening on %s", addr)
+	log.Printf("🔒 Concurrency limit: %d connections", maxConcurrentConnections)
+	log.Printf("💾 Memory limit: %d MB", memoryLimitMB)
 	log.Fatal(http.ListenAndServe(addr, nil))
+}
+
+// 状态监控处理器
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	status := getSystemStatus()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }
 
 // 检查连接是否仍然活跃
@@ -888,17 +937,46 @@ func isConnectionAlive(w http.ResponseWriter) bool {
 	return true
 }
 
-// 优化的缓冲区大小计算
-func getOptimalBufferSize() int {
-	// 根据性能模式调整缓冲区大小
-	switch strings.ToLower(performanceMode) {
-	case "fast":
-		return 4096 // 4KB - 快速模式使用较小缓冲区
-	case "secure":
-		return 16384 // 16KB - 安全模式使用较大缓冲区
-	default: // balanced
-		return 8192 // 8KB - 平衡模式
+// 并发控制中间件
+func concurrencyControlMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 尝试获取连接许可
+		select {
+		case connectionSemaphore <- struct{}{}:
+			// 获取到许可，继续处理
+			atomic.AddInt64(&currentConnections, 1)
+			defer func() {
+				<-connectionSemaphore
+				atomic.AddInt64(&currentConnections, -1)
+			}()
+			next(w, r)
+		default:
+			// 连接数已满，返回503错误
+			http.Error(w, `{"error": "Server too busy, please try again later"}`, http.StatusServiceUnavailable)
+			log.Printf("⚠️ 连接数已满，拒绝新连接。当前连接数: %d", atomic.LoadInt64(&currentConnections))
+		}
 	}
+}
+
+// 获取当前系统状态
+func getSystemStatus() map[string]interface{} {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	return map[string]interface{}{
+		"current_connections": atomic.LoadInt64(&currentConnections),
+		"max_connections":     maxConcurrentConnections,
+		"memory_usage_mb":     m.Alloc / 1024 / 1024,
+		"memory_limit_mb":     memoryLimitMB,
+		"total_requests":      atomic.LoadInt64(&requestCount),
+		"error_count":         atomic.LoadInt64(&errorCount),
+	}
+}
+
+// 优化的缓冲区大小计算 - 已弃用，使用 streamBufferSize 配置
+func getOptimalBufferSize() int {
+	// 返回配置的缓冲区大小
+	return streamBufferSize
 }
 
 func init() {
@@ -907,19 +985,22 @@ func init() {
 	apiEndpoints = getAPIEndpoints()
 	validAPIKeys = getValidAPIKeys()
 
+	// 初始化并发控制
+	connectionSemaphore = make(chan struct{}, maxConcurrentConnections)
+
 	log.Printf("🚀 %s", DESCRIPTION)
 	log.Printf("📦 Version: %s (Build: %s)", VERSION, BUILD_DATE)
 	log.Printf("🌐 Server started on port %d", port)
 	log.Printf("⚡ Performance mode: %s", performanceMode)
-	log.Printf("🔧 Config: retries=%d, delay=%dms, timeout=%dms", maxRetries, retryDelay, requestTimeout)
+	log.Printf("🔧 Config: retries=%d, delay=%dms, request_timeout=%dms, stream_timeout=%dms", maxRetries, retryDelay, requestTimeout, streamTimeout)
 	log.Printf("⏱️  Random delay: %d-%dms", randomDelayMin, randomDelayMax)
 	log.Printf("📝 Detailed logging: %v, User messages: %v, Response content: %v", enableDetailedLogging, logUserMessages, logResponseContent)
-	log.Printf("🔧 Optimal buffer size: %d bytes", getOptimalBufferSize())
-	log.Printf("✨ Key improvements:")
-	log.Printf("   • 数据块读取策略，避免按行读取截断")
+	log.Printf("🌊 Stream config: buffer_size=%d bytes, connection_check_disabled=%v, check_interval=%d", streamBufferSize, disableConnectionCheck, connectionCheckInterval)
+	log.Printf("✨ 流式响应优化:")
+	log.Printf("   • 分离的流式响应超时机制")
+	log.Printf("   • 优化的缓冲区管理策略")
+	log.Printf("   • 可配置的连接检测频率")
 	log.Printf("   • 增强的错误恢复机制")
-	log.Printf("   • 安全的数据发送函数")
-	log.Printf("   • 动态缓冲区大小优化")
-	log.Printf("   • 连接状态检测")
+	log.Printf("   • 防止长响应截断的安全措施")
 	log.Printf("   • 内存泄漏防护")
 }
