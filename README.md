@@ -8,12 +8,13 @@
 - 📋 支持模型列表查询
 - 💬 聊天完成接口（支持流式响应）
 - 🧠 智能处理思考内容（reasoning_content）
+- ☁️ 支持 Deno Deploy 部署
 
 ## 运行要求
 
 - Deno 1.30+
 
-## 安装运行
+## 本地开发
 
 ### 开发模式（自动重启）
 ```bash
@@ -29,6 +30,23 @@ deno task start
 ```bash
 deno run --allow-net index.ts
 ```
+
+## Deno Deploy 部署
+
+### 方法一：使用 main.ts（推荐）
+1. 在 Deno Deploy 项目中设置入口点为 `main.ts`
+2. 确保项目根目录包含 `deno.json` 配置文件
+3. 直接部署，无需额外配置
+
+### 方法二：使用 index.ts
+1. 确保 `deno.json` 不包含 `allowJs` 选项
+2. 服务器会自动使用环境变量 `PORT`
+3. 在 Deno Deploy 项目设置中指定入口点为 `index.ts`
+
+### 部署注意事项
+- Deno Deploy 会自动提供 `PORT` 环境变量
+- 不支持某些编译器选项（如 `allowJs`）
+- 建议使用 `main.ts` 作为入口点以获得最佳兼容性
 
 ## API 使用
 

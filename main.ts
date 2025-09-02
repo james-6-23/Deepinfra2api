@@ -1,3 +1,6 @@
+#!/usr/bin/env -S deno run --allow-net
+// 这是专为 Deno Deploy 平台优化的入口文件
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 // 类型定义
@@ -28,7 +31,6 @@ interface StreamResponse {
 }
 
 const DEEPINFRA_URL = "https://api.deepinfra.com/v1/openai/chat/completions";
-const PORT = parseInt(Deno.env.get("PORT") || "8000");
 
 // ✅ 自定义 API Key（你控制）
 const VALID_API_KEYS = ["linux.do"];
@@ -40,12 +42,15 @@ const SUPPORTED_MODELS = [
   { id: "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo", object: "model" },
   { id: "deepseek-ai/DeepSeek-R1-0528-Turbo", object: "model" },
   { id: "deepseek-ai/DeepSeek-V3-0324-Turbo", object: "model" },
-  { id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-Turbo", object: "model" }
+  { id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-Turbo", object: "model" },
+  {id: "deepseek-ai/DeepSeek-V3.1", object: "model" }
+
 ];
 
-console.log(`✅ Proxy server running at http://localhost:${PORT}`);
+console.log(`✅ Proxy server starting...`);
 
-serve(async (req: Request) => {
+// Deno Deploy 兼容的处理函数
+async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
   // ✅ 模型列表接口
@@ -127,12 +132,12 @@ serve(async (req: Request) => {
         let isInThinkBlock = false;
         let bufferedThinkContent = "";
 
-        while (reader) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value);
-          
-          try {
+        try {
+          while (reader) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            
             for (const line of chunk.split("\n")) {
               if (line.startsWith("data: ")) {
                 const jsonText = line.slice(6);
@@ -154,17 +159,13 @@ serve(async (req: Request) => {
                   
                   // ✅ 处理 reasoning_content 和 content
                   let contentToSend: string | null = null;
-                  let isThinkContent = false;
 
                   // 检查是否是思考内容
                   if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
-                    isThinkContent = true;
-                    
                     // 如果是思考内容，先缓冲起来，不立即发送
                     if (delta.reasoning_content) {
                       bufferedThinkContent += delta.reasoning_content;
                     }
-                    
                     // 标记当前处于思考块中
                     isInThinkBlock = true;
                   } 
@@ -181,7 +182,6 @@ serve(async (req: Request) => {
                       bufferedThinkContent = "";
                       isInThinkBlock = false;
                     }
-                    
                     // 然后发送正常内容
                     contentToSend = delta.content;
                   }
@@ -198,13 +198,8 @@ serve(async (req: Request) => {
                 }
               }
             }
-          } catch (error) {
-            console.warn('流处理错误:', error);
-            break;
           }
-        }
 
-        try {
           // ✅ 再次确保所有缓冲的内容都已发送
           if (isInThinkBlock && bufferedThinkContent) {
             const output = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
@@ -213,7 +208,7 @@ serve(async (req: Request) => {
 
           controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
         } catch (error) {
-          console.warn('最终数据发送失败:', error);
+          console.error('流处理错误:', error);
         } finally {
           try {
             controller.close();
@@ -235,4 +230,7 @@ serve(async (req: Request) => {
   }
 
   return new Response("Not Found", { status: 404 });
-}, { port: PORT });
+}
+
+// 使用 Deno Deploy 推荐的方式启动服务器
+serve(handler);
