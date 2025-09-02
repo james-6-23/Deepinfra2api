@@ -1,10 +1,7 @@
 #!/bin/bash
 
 # DeepInfra2API 统一启动脚本
-# 支持多端点配置和完整的部署选项
-
-echo "🚀 DeepInfra2API 统一启动脚本"
-echo "================================"
+# 支持多端点配置、WARP 代理和循环交互
 
 # 颜色定义
 RED='\033[0;31m'
@@ -15,73 +12,15 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# 检查 Docker
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}❌ Docker 未安装，请先安装 Docker${NC}"
-    exit 1
-fi
-
-if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-    echo -e "${RED}❌ Docker Compose 未安装，请先安装 Docker Compose${NC}"
-    exit 1
-fi
-
-# 多端点配置选项
-configure_endpoints() {
-    echo -e "${CYAN}🌐 配置多端点负载均衡${NC}"
-    echo "多端点可以提高可用性和稳定性，支持故障转移"
-    echo ""
-    echo "预设配置选项："
-    echo "1) 单端点（默认）- 仅使用官方 API"
-    echo "2) 双端点配置 - 官方 + 备用端点"
-    echo "3) 三端点配置 - 官方 + 两个备用端点"
-    echo "4) 自定义配置 - 手动输入端点"
-    echo "5) 跳过配置 - 使用现有配置"
-
-    read -p "请选择端点配置 (1-5): " endpoint_choice
-
-    case $endpoint_choice in
-        1)
-            # 单端点 - 清空 DEEPINFRA_MIRRORS
-            sed -i 's/^DEEPINFRA_MIRRORS=.*/DEEPINFRA_MIRRORS=/' .env 2>/dev/null || true
-            echo -e "${GREEN}✅ 配置为单端点模式${NC}"
-            ;;
-        2)
-            # 双端点配置
-            mirrors="https://api.deepinfra.com/v1/openai/chat/completions,https://api1.deepinfra.com/v1/openai/chat/completions"
-            update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
-            echo -e "${GREEN}✅ 配置为双端点模式${NC}"
-            ;;
-        3)
-            # 三端点配置
-            mirrors="https://api.deepinfra.com/v1/openai/chat/completions,https://api1.deepinfra.com/v1/openai/chat/completions,https://api2.deepinfra.com/v1/openai/chat/completions"
-            update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
-            echo -e "${GREEN}✅ 配置为三端点模式${NC}"
-            ;;
-        4)
-            # 自定义配置
-            echo "请输入端点 URL（用逗号分隔）："
-            echo "示例: https://api.deepinfra.com/v1/openai/chat/completions,https://api1.deepinfra.com/v1/openai/chat/completions"
-            read -p "端点列表: " custom_mirrors
-            if [ -n "$custom_mirrors" ]; then
-                update_env_var "DEEPINFRA_MIRRORS" "$custom_mirrors"
-                echo -e "${GREEN}✅ 自定义端点配置完成${NC}"
-            else
-                echo -e "${YELLOW}⚠️  输入为空，保持现有配置${NC}"
-            fi
-            ;;
-        5)
-            echo -e "${BLUE}ℹ️  跳过端点配置${NC}"
-            ;;
-        *)
-            echo -e "${YELLOW}⚠️  无效选择，使用默认单端点配置${NC}"
-            sed -i 's/^DEEPINFRA_MIRRORS=.*/DEEPINFRA_MIRRORS=/' .env 2>/dev/null || true
-            ;;
-    esac
+# 显示标题
+show_title() {
+    clear
+    echo -e "${CYAN}🚀 DeepInfra2API 统一启动脚本${NC}"
+    echo -e "${CYAN}================================${NC}"
     echo ""
 }
 
-# 更新环境变量
+# 更新环境变量函数
 update_env_var() {
     local var_name=$1
     local var_value=$2
@@ -94,6 +33,236 @@ update_env_var() {
         echo "${var_name}=${var_value}" >> .env
     fi
 }
+
+# 端口扫描和管理函数
+check_port_available() {
+    local port=$1
+    local protocol=${2:-tcp}
+
+    # 使用多种方法检查端口是否可用
+    if command -v netstat >/dev/null 2>&1; then
+        # 使用 netstat 检查
+        if netstat -tuln 2>/dev/null | grep -q ":${port} "; then
+            return 1  # 端口被占用
+        fi
+    elif command -v ss >/dev/null 2>&1; then
+        # 使用 ss 检查（更现代的工具）
+        if ss -tuln 2>/dev/null | grep -q ":${port} "; then
+            return 1  # 端口被占用
+        fi
+    elif command -v lsof >/dev/null 2>&1; then
+        # 使用 lsof 检查
+        if lsof -i :${port} >/dev/null 2>&1; then
+            return 1  # 端口被占用
+        fi
+    else
+        # 使用 nc 或 telnet 作为最后手段
+        if command -v nc >/dev/null 2>&1; then
+            if nc -z localhost ${port} 2>/dev/null; then
+                return 1  # 端口被占用
+            fi
+        fi
+    fi
+
+    return 0  # 端口可用
+}
+
+# 查找可用端口
+find_available_port() {
+    local start_port=$1
+    local max_attempts=${2:-50}
+
+    for ((i=0; i<max_attempts; i++)); do
+        local test_port=$((start_port + i))
+        if check_port_available $test_port; then
+            echo $test_port
+            return 0
+        fi
+    done
+
+    return 1  # 未找到可用端口
+}
+
+# 获取当前使用的端口
+get_current_ports() {
+    local deno_port=$(grep "^DENO_PORT=" .env 2>/dev/null | cut -d'=' -f2)
+    local go_port=$(grep "^GO_PORT=" .env 2>/dev/null | cut -d'=' -f2)
+
+    # 设置默认值
+    deno_port=${deno_port:-8000}
+    go_port=${go_port:-8001}
+
+    echo "$deno_port $go_port"
+}
+
+# 端口配置向导
+configure_ports() {
+    local deployment_type=$1  # "deno", "go", "both"
+
+    echo -e "${CYAN}🔌 端口配置向导${NC}"
+    echo "正在扫描可用端口..."
+
+    # 获取当前端口配置
+    local current_ports=($(get_current_ports))
+    local current_deno_port=${current_ports[0]}
+    local current_go_port=${current_ports[1]}
+
+    # 检查当前端口状态
+    local deno_available=false
+    local go_available=false
+
+    if check_port_available $current_deno_port; then
+        deno_available=true
+    fi
+
+    if check_port_available $current_go_port; then
+        go_available=true
+    fi
+
+    echo ""
+    echo -e "${BLUE}📊 端口状态扫描结果:${NC}"
+
+    if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
+        if $deno_available; then
+            echo -e "  Deno 端口 $current_deno_port: ${GREEN}✅ 可用${NC}"
+        else
+            echo -e "  Deno 端口 $current_deno_port: ${RED}❌ 被占用${NC}"
+        fi
+    fi
+
+    if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
+        if $go_available; then
+            echo -e "  Go 端口 $current_go_port: ${GREEN}✅ 可用${NC}"
+        else
+            echo -e "  Go 端口 $current_go_port: ${RED}❌ 被占用${NC}"
+        fi
+    fi
+
+    echo ""
+
+    # 如果有端口冲突，提供解决方案
+    local need_reconfigure=false
+
+    if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
+        if ! $deno_available; then
+            need_reconfigure=true
+        fi
+    fi
+
+    if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
+        if ! $go_available; then
+            need_reconfigure=true
+        fi
+    fi
+
+    if $need_reconfigure; then
+        echo -e "${YELLOW}⚠️  检测到端口冲突，需要重新配置端口${NC}"
+        echo ""
+        echo "请选择处理方式："
+        echo "1) 自动分配可用端口"
+        echo "2) 手动指定端口"
+        echo "3) 使用默认端口（可能导致冲突）"
+        echo ""
+
+        read -p "请选择 (1-3): " port_choice
+
+        case $port_choice in
+            1)
+                auto_assign_ports "$deployment_type"
+                ;;
+            2)
+                manual_assign_ports "$deployment_type"
+                ;;
+            3)
+                echo -e "${YELLOW}⚠️  使用默认端口，可能存在冲突风险${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}⚠️  无效选择，使用自动分配${NC}"
+                auto_assign_ports "$deployment_type"
+                ;;
+        esac
+    else
+        echo -e "${GREEN}✅ 所有端口都可用，无需重新配置${NC}"
+    fi
+}
+
+# 自动分配端口
+auto_assign_ports() {
+    local deployment_type=$1
+
+    echo -e "${BLUE}🔍 自动扫描可用端口...${NC}"
+
+    if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
+        local new_deno_port=$(find_available_port 8000)
+        if [ $? -eq 0 ]; then
+            update_env_var "DENO_PORT" "$new_deno_port"
+            echo -e "  Deno 端口: ${GREEN}$new_deno_port${NC}"
+        else
+            echo -e "  ${RED}❌ 无法找到 Deno 可用端口${NC}"
+            return 1
+        fi
+    fi
+
+    if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
+        local new_go_port=$(find_available_port 8001)
+        if [ $? -eq 0 ]; then
+            update_env_var "GO_PORT" "$new_go_port"
+            echo -e "  Go 端口: ${GREEN}$new_go_port${NC}"
+        else
+            echo -e "  ${RED}❌ 无法找到 Go 可用端口${NC}"
+            return 1
+        fi
+    fi
+
+    echo -e "${GREEN}✅ 端口自动配置完成${NC}"
+}
+
+# 手动分配端口
+manual_assign_ports() {
+    local deployment_type=$1
+
+    echo -e "${BLUE}✏️  手动端口配置${NC}"
+
+    if [ "$deployment_type" = "deno" ] || [ "$deployment_type" = "both" ]; then
+        while true; do
+            read -p "请输入 Deno 版本端口 (建议 8000-8099): " deno_port
+
+            if [[ "$deno_port" =~ ^[0-9]+$ ]] && [ "$deno_port" -ge 1024 ] && [ "$deno_port" -le 65535 ]; then
+                if check_port_available "$deno_port"; then
+                    update_env_var "DENO_PORT" "$deno_port"
+                    echo -e "  Deno 端口设置为: ${GREEN}$deno_port${NC}"
+                    break
+                else
+                    echo -e "  ${RED}❌ 端口 $deno_port 已被占用，请选择其他端口${NC}"
+                fi
+            else
+                echo -e "  ${RED}❌ 无效端口号，请输入 1024-65535 之间的数字${NC}"
+            fi
+        done
+    fi
+
+    if [ "$deployment_type" = "go" ] || [ "$deployment_type" = "both" ]; then
+        while true; do
+            read -p "请输入 Go 版本端口 (建议 8001-8099): " go_port
+
+            if [[ "$go_port" =~ ^[0-9]+$ ]] && [ "$go_port" -ge 1024 ] && [ "$go_port" -le 65535 ]; then
+                if check_port_available "$go_port"; then
+                    update_env_var "GO_PORT" "$go_port"
+                    echo -e "  Go 端口设置为: ${GREEN}$go_port${NC}"
+                    break
+                else
+                    echo -e "  ${RED}❌ 端口 $go_port 已被占用，请选择其他端口${NC}"
+                fi
+            else
+                echo -e "  ${RED}❌ 无效端口号，请输入 1024-65535 之间的数字${NC}"
+            fi
+        done
+    fi
+
+    echo -e "${GREEN}✅ 端口手动配置完成${NC}"
+}
+
+
 
 # 测试部署函数
 test_deployment() {
@@ -150,13 +319,18 @@ test_deployment() {
         fi
     }
 
+    # 获取实际端口配置
+    local current_ports=($(get_current_ports))
+    local actual_deno_port=${current_ports[0]}
+    local actual_go_port=${current_ports[1]}
+
     # 检测可用的端口
     available_ports=()
-    if curl -s "http://localhost:$DENO_PORT/health" >/dev/null 2>&1; then
-        available_ports+=("$DENO_PORT:Deno")
+    if curl -s "http://localhost:$actual_deno_port/health" >/dev/null 2>&1; then
+        available_ports+=("$actual_deno_port:Deno")
     fi
-    if curl -s "http://localhost:$GO_PORT/health" >/dev/null 2>&1; then
-        available_ports+=("$GO_PORT:Go")
+    if curl -s "http://localhost:$actual_go_port/health" >/dev/null 2>&1; then
+        available_ports+=("$actual_go_port:Go")
     fi
 
     if [ ${#available_ports[@]} -eq 0 ]; then
@@ -246,128 +420,213 @@ if [ ! -f ".env" ]; then
     fi
 fi
 
-# 显示选项
-echo -e "${BLUE}🎯 请选择操作:${NC}"
-echo "1) Deno 版本 (端口 8000) - 推荐用于开发"
-echo "2) Go 版本 (端口 8001) - 推荐用于生产"
-echo "3) 两个版本同时部署"
-echo "4) Deno + WARP 代理"
-echo "5) Go + WARP 代理"
-echo "6) 两个版本 + WARP 代理"
-echo "7) 仅 WARP 代理"
-echo "8) 配置多端点负载均衡"
-echo "9) 测试部署"
-echo "10) 停止所有服务"
-echo "11) 查看服务状态"
+# 显示主菜单
+show_menu() {
+    echo -e "${BLUE}🎯 请选择部署方案:${NC}"
+    echo ""
+    echo -e "${YELLOW}📦 Deno 版本部署 (端口 8000) - 推荐用于开发${NC}"
+    echo "  1) Deno 基础版"
+    echo "  2) Deno + 多端点负载均衡"
+    echo "  3) Deno + WARP 代理"
+    echo "  4) Deno + 多端点 + WARP 代理"
+    echo ""
+    echo -e "${YELLOW}🐹 Go 版本部署 (端口 8001) - 推荐用于生产${NC}"
+    echo "  5) Go 基础版"
+    echo "  6) Go + 多端点负载均衡"
+    echo "  7) Go + WARP 代理"
+    echo "  8) Go + 多端点 + WARP 代理"
+    echo ""
+    echo -e "${YELLOW}🔄 双版本部署${NC}"
+    echo "  9) 双版本基础部署"
+    echo "  10) 双版本 + 多端点负载均衡"
+    echo "  11) 双版本 + WARP 代理"
+    echo "  12) 双版本 + 多端点 + WARP 代理"
+    echo ""
+    echo -e "${YELLOW}🛠️ 管理操作${NC}"
+    echo "  13) 测试部署"
+    echo "  14) 查看服务状态"
+    echo "  15) 停止所有服务"
+    echo "  0) 退出"
+    echo ""
+}
 
-read -p "请选择 (1-11): " choice
+# 部署函数
+deploy_service() {
+    local profiles="$1"
+    local description="$2"
+    local endpoints="$3"
 
-case $choice in
-    1)
-        echo -e "${BLUE}🦕 启动 Deno 版本...${NC}"
-        docker compose --profile deno up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ Deno 版本启动成功！${NC}"
-            echo -e "${BLUE}🔗 访问地址: http://localhost:8000${NC}"
-            echo -e "${BLUE}📊 健康检查: curl http://localhost:8000/health${NC}"
+    echo -e "${BLUE}🚀 $description...${NC}"
+
+    # 确定部署类型
+    local deployment_type="both"
+    if [[ "$profiles" == *"deno"* ]] && [[ "$profiles" != *"go"* ]]; then
+        deployment_type="deno"
+    elif [[ "$profiles" == *"go"* ]] && [[ "$profiles" != *"deno"* ]]; then
+        deployment_type="go"
+    fi
+
+    # 端口配置检查
+    configure_ports "$deployment_type"
+
+    # 配置多端点（如果需要）
+    if [ "$endpoints" = "multi" ]; then
+        configure_multi_endpoints
+    elif [ "$endpoints" = "single" ]; then
+        configure_single_endpoint
+    fi
+
+    # 获取实际端口配置
+    local current_ports=($(get_current_ports))
+    local actual_deno_port=${current_ports[0]}
+    local actual_go_port=${current_ports[1]}
+
+    # 启动服务
+    if docker compose $profiles up -d --build; then
+        echo -e "${GREEN}✅ $description 启动成功！${NC}"
+
+        # 显示访问信息
+        if [[ "$profiles" == *"deno"* ]]; then
+            echo -e "${BLUE}🔗 Deno 版本: http://localhost:$actual_deno_port${NC}"
+            echo -e "${BLUE}📊 健康检查: curl http://localhost:$actual_deno_port/health${NC}"
         fi
-        ;;
-    2)
-        echo -e "${BLUE}🐹 启动 Go 版本...${NC}"
-        docker compose --profile go up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ Go 版本启动成功！${NC}"
-            echo -e "${BLUE}🔗 访问地址: http://localhost:8001${NC}"
-            echo -e "${BLUE}📊 健康检查: curl http://localhost:8001/health${NC}"
+        if [[ "$profiles" == *"go"* ]]; then
+            echo -e "${BLUE}🔗 Go 版本: http://localhost:$actual_go_port${NC}"
+            echo -e "${BLUE}📊 健康检查: curl http://localhost:$actual_go_port/health${NC}"
         fi
-        ;;
-    3)
-        echo -e "${BLUE}🔄 启动两个版本...${NC}"
-        docker compose --profile deno --profile go up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ 两个版本启动成功！${NC}"
-            echo -e "${BLUE}🔗 Deno 版本: http://localhost:8000${NC}"
-            echo -e "${BLUE}🔗 Go 版本: http://localhost:8001${NC}"
-        fi
-        ;;
-    4)
-        echo -e "${BLUE}🦕🛡️ 启动 Deno + WARP...${NC}"
-        docker compose --profile warp --profile deno up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ Deno + WARP 启动成功！${NC}"
-            echo -e "${BLUE}🔗 访问地址: http://localhost:8000${NC}"
+        if [[ "$profiles" == *"warp"* ]]; then
             echo -e "${YELLOW}⏳ WARP 代理需要约 30 秒启动时间${NC}"
         fi
-        ;;
-    5)
-        echo -e "${BLUE}🐹🛡️ 启动 Go + WARP...${NC}"
-        docker compose --profile warp --profile go up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ Go + WARP 启动成功！${NC}"
-            echo -e "${BLUE}🔗 访问地址: http://localhost:8001${NC}"
-            echo -e "${YELLOW}⏳ WARP 代理需要约 30 秒启动时间${NC}"
+
+        # 显示端点配置信息
+        if [ "$endpoints" = "multi" ]; then
+            echo -e "${CYAN}🌐 已启用多端点负载均衡${NC}"
         fi
-        ;;
-    6)
-        echo -e "${BLUE}🔄🛡️ 启动两个版本 + WARP...${NC}"
-        docker compose --profile warp --profile deno --profile go up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ 完整部署启动成功！${NC}"
-            echo -e "${BLUE}🔗 Deno 版本: http://localhost:8000${NC}"
-            echo -e "${BLUE}🔗 Go 版本: http://localhost:8001${NC}"
-            echo -e "${YELLOW}⏳ WARP 代理需要约 30 秒启动时间${NC}"
-        fi
-        ;;
-    7)
-        echo -e "${BLUE}🛡️ 启动 WARP 代理...${NC}"
-        docker compose --profile warp up -d --build
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ WARP 代理启动成功！${NC}"
-            echo -e "${YELLOW}⏳ WARP 代理需要约 30 秒启动时间${NC}"
-        fi
-        ;;
-    8)
-        echo -e "${BLUE}🌐 配置多端点负载均衡...${NC}"
-        configure_endpoints
-        ;;
-    9)
-        echo -e "${BLUE}🧪 测试部署...${NC}"
-        test_deployment
-        ;;
-    10)
-        echo -e "${BLUE}🛑 停止所有服务...${NC}"
-        docker compose down
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ 所有服务已停止${NC}"
-        fi
-        ;;
-    11)
-        echo -e "${BLUE}📊 服务状态:${NC}"
-        docker compose ps
+
+    else
+        echo -e "${RED}❌ $description 启动失败${NC}"
+        echo -e "${BLUE}💡 故障排除建议:${NC}"
+        echo "  1. 检查端口是否被占用"
+        echo "  2. 查看 Docker 日志: docker compose logs"
+        echo "  3. 确认 Docker 服务正常运行"
+    fi
+}
+
+# 配置单端点
+configure_single_endpoint() {
+    update_env_var "DEEPINFRA_MIRRORS" ""
+    echo -e "${GREEN}✅ 配置为单端点模式${NC}"
+}
+
+# 配置多端点
+configure_multi_endpoints() {
+    local mirrors="https://api.deepinfra.com/v1/openai/chat/completions,https://api1.deepinfra.com/v1/openai/chat/completions,https://api2.deepinfra.com/v1/openai/chat/completions"
+    update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
+    echo -e "${GREEN}✅ 配置为多端点负载均衡模式${NC}"
+}
+
+# 处理用户选择
+handle_choice() {
+    local choice=$1
+
+    case $choice in
+        1) deploy_service "--profile deno" "Deno 基础版部署" "single" ;;
+        2) deploy_service "--profile deno" "Deno + 多端点部署" "multi" ;;
+        3) deploy_service "--profile warp --profile deno" "Deno + WARP 代理部署" "single" ;;
+        4) deploy_service "--profile warp --profile deno" "Deno + 多端点 + WARP 代理部署" "multi" ;;
+        5) deploy_service "--profile go" "Go 基础版部署" "single" ;;
+        6) deploy_service "--profile go" "Go + 多端点部署" "multi" ;;
+        7) deploy_service "--profile warp --profile go" "Go + WARP 代理部署" "single" ;;
+        8) deploy_service "--profile warp --profile go" "Go + 多端点 + WARP 代理部署" "multi" ;;
+        9) deploy_service "--profile deno --profile go" "双版本基础部署" "single" ;;
+        10) deploy_service "--profile deno --profile go" "双版本 + 多端点部署" "multi" ;;
+        11) deploy_service "--profile warp --profile deno --profile go" "双版本 + WARP 代理部署" "single" ;;
+        12) deploy_service "--profile warp --profile deno --profile go" "双版本 + 多端点 + WARP 代理部署" "multi" ;;
+        13)
+            echo -e "${BLUE}🧪 测试部署...${NC}"
+            test_deployment
+            ;;
+        14)
+            echo -e "${BLUE}📊 服务状态:${NC}"
+            docker compose ps
+            echo ""
+            echo -e "${BLUE}📋 容器日志查看命令:${NC}"
+            echo "  docker compose logs -f deepinfra-proxy-deno"
+            echo "  docker compose logs -f deepinfra-proxy-go"
+            echo "  docker compose logs -f deepinfra-warp"
+            ;;
+        15)
+            echo -e "${BLUE}🛑 停止所有服务...${NC}"
+            if docker compose down; then
+                echo -e "${GREEN}✅ 所有服务已停止${NC}"
+            else
+                echo -e "${RED}❌ 停止服务失败${NC}"
+            fi
+            ;;
+        0)
+            echo -e "${GREEN}👋 感谢使用 DeepInfra2API！${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}❌ 无效选择，请输入 0-15${NC}"
+            ;;
+    esac
+}
+
+# 主循环
+main_loop() {
+    while true; do
+        show_title
+        show_menu
+
+        read -p "请选择 (0-15): " choice
         echo ""
-        echo -e "${BLUE}📋 容器日志查看命令:${NC}"
-        echo "  docker compose logs -f deepinfra-proxy-deno"
-        echo "  docker compose logs -f deepinfra-proxy-go"
-        echo "  docker compose logs -f deepinfra-warp"
-        ;;
-    *)
-        echo -e "${RED}❌ 无效选择${NC}"
-        exit 1
-        ;;
-esac
 
-# 如果是启动操作，显示额外信息
-if [[ $choice -ge 1 && $choice -le 7 ]]; then
-    echo ""
-    echo -e "${BLUE}📋 有用的命令:${NC}"
-    echo "  查看状态: docker compose ps"
-    echo "  查看日志: docker compose logs -f"
-    echo "  停止服务: docker compose down"
-    echo "  重启服务: docker compose restart"
-    echo ""
-    echo -e "${BLUE}🧪 运行测试:${NC}"
-    echo "  chmod +x test-deployment.sh && ./test-deployment.sh"
-    echo ""
-    echo -e "${BLUE}📖 查看完整文档:${NC}"
-    echo "  cat DEPLOYMENT_GUIDE.md"
-fi
+        handle_choice "$choice"
+
+        # 如果不是退出选项，显示提示并等待用户按键
+        if [ "$choice" != "0" ]; then
+            echo ""
+            echo -e "${BLUE}📋 有用的命令:${NC}"
+            echo "  查看状态: docker compose ps"
+            echo "  查看日志: docker compose logs -f"
+            echo "  停止服务: docker compose down"
+            echo ""
+            echo -e "${YELLOW}按任意键返回主菜单...${NC}"
+            read -n 1 -s
+        fi
+    done
+}
+
+# 脚本入口点
+main() {
+    # 检查 Docker 环境
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}❌ Docker 未安装，请先安装 Docker${NC}"
+        exit 1
+    fi
+
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        echo -e "${RED}❌ Docker Compose 未安装，请先安装 Docker Compose${NC}"
+        exit 1
+    fi
+
+    # 检查并创建 .env 文件
+    if [ ! -f ".env" ]; then
+        echo -e "${YELLOW}⚠️  .env 文件不存在，从 .env.example 创建...${NC}"
+        if [ -f ".env.example" ]; then
+            cp .env.example .env
+            echo -e "${GREEN}✅ .env 文件已创建${NC}"
+            sleep 2
+        else
+            echo -e "${RED}❌ .env.example 文件不存在${NC}"
+            exit 1
+        fi
+    fi
+
+    # 启动主循环
+    main_loop
+}
+
+# 运行主函数
+main "$@"

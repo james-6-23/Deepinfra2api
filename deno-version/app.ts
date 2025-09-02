@@ -197,8 +197,8 @@ const VALID_API_KEYS = getValidApiKeys();
 
 // 日志配置
 const ENABLE_DETAILED_LOGGING = Deno.env.get("ENABLE_DETAILED_LOGGING") !== "false";
-const LOG_USER_MESSAGES = Deno.env.get("LOG_USER_MESSAGES") !== "false";
-const LOG_RESPONSE_CONTENT = Deno.env.get("LOG_RESPONSE_CONTENT") !== "false";
+const LOG_USER_MESSAGES = Deno.env.get("LOG_USER_MESSAGES") === "true";
+const LOG_RESPONSE_CONTENT = Deno.env.get("LOG_RESPONSE_CONTENT") === "true";
 
 // 日志系统函数
 function generateRequestId(): string {
@@ -251,7 +251,7 @@ function logRequest(
   clientIp: string,
   apiKey: string,
   model: string,
-  messages?: ChatMessage[],
+  messageCount: number,
   parameters?: Record<string, any>,
   userAgent?: string
 ): void {
@@ -270,13 +270,11 @@ function logRequest(
     user_agent: userAgent,
   };
 
-  if (LOG_USER_MESSAGES && messages) {
-    requestLog.messages = messages;
-  }
-
-  if (parameters) {
-    requestLog.parameters = parameters;
-  }
+  // 只记录消息数量，不记录具体内容
+  requestLog.parameters = {
+    message_count: messageCount,
+    parameters: parameters,
+  };
 
   logStructured(requestLog);
 }
@@ -287,8 +285,6 @@ function logResponse(
   responseTime: number,
   endpoint: string,
   retryCount: number,
-  content?: any,
-  reasoningContent?: string,
   error?: string
 ): void {
   if (!ENABLE_DETAILED_LOGGING) {
@@ -314,30 +310,12 @@ function logResponse(
     error: error,
   };
 
-  if (LOG_RESPONSE_CONTENT) {
-    responseLog.content = content;
-    responseLog.reasoning_content = reasoningContent;
-  }
+  // 不记录响应内容，只记录技术指标
 
   logStructured(responseLog);
 }
 
-function logStream(requestId: string, content?: any, delta?: any): void {
-  if (!ENABLE_DETAILED_LOGGING || !LOG_RESPONSE_CONTENT) {
-    return;
-  }
-
-  const streamLog: StreamLog = {
-    request_id: requestId,
-    timestamp: new Date().toISOString(),
-    level: "INFO",
-    type: "stream",
-    content: content,
-    delta: delta,
-  };
-
-  logStructured(streamLog);
-}
+// logStream 函数已移除，不再记录流式内容
 
 // 支持的模型列表
 const SUPPORTED_MODELS = [
@@ -420,7 +398,7 @@ async function handler(req: Request): Promise<Response> {
     const key = auth?.replace("Bearer ", "").trim();
     if (!key || !VALID_API_KEYS.includes(key)) {
       const responseTime = Date.now() - startTime;
-      logResponse(requestId, 401, responseTime, "", 0, undefined, undefined, "Unauthorized");
+      logResponse(requestId, 401, responseTime, "", 0, "Unauthorized");
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "Content-Type": "application/json" }
@@ -433,7 +411,7 @@ async function handler(req: Request): Promise<Response> {
       parsed = JSON.parse(body) as ChatRequest;
     } catch (error) {
       const responseTime = Date.now() - startTime;
-      logResponse(requestId, 400, responseTime, "", 0, undefined, undefined, "Invalid JSON format");
+      logResponse(requestId, 400, responseTime, "", 0, "Invalid JSON format");
       return new Response(JSON.stringify({ error: "Invalid JSON format" }), {
         status: 400,
         headers: { "Content-Type": "application/json" }
@@ -446,7 +424,7 @@ async function handler(req: Request): Promise<Response> {
       temperature: parsed.temperature,
       max_tokens: parsed.max_tokens,
     };
-    logRequest(requestId, clientIp, key, parsed.model, parsed.messages, parameters, userAgent);
+    logRequest(requestId, clientIp, key, parsed.model, parsed.messages.length, parameters, userAgent);
 
     const isStream = parsed.stream === true;
 
@@ -494,7 +472,7 @@ async function handler(req: Request): Promise<Response> {
       totalResponseTime += responseTime;
 
       const errorMsg = error instanceof Error ? error.message : "未知错误";
-      logResponse(requestId, 502, responseTime, "all_endpoints", MAX_RETRIES, undefined, undefined, errorMsg);
+      logResponse(requestId, 502, responseTime, "all_endpoints", MAX_RETRIES, errorMsg);
       console.error('DeepInfra API 所有端点请求失败:', error);
       return new Response(JSON.stringify({
         error: "External API request failed",
@@ -514,15 +492,7 @@ async function handler(req: Request): Promise<Response> {
       const responseTime = Date.now() - startTime;
       totalResponseTime += responseTime;
 
-      // 解析响应内容用于日志记录
-      let responseContent;
-      try {
-        responseContent = JSON.parse(result);
-      } catch {
-        responseContent = result;
-      }
-
-      logResponse(requestId, response.status, responseTime, "deepinfra_api", 0, responseContent, undefined, undefined);
+      logResponse(requestId, response.status, responseTime, "deepinfra_api", 0, undefined);
       console.log(`✅ 请求完成: ${responseTime}ms`);
 
       return new Response(result, {
@@ -618,8 +588,6 @@ async function handler(req: Request): Promise<Response> {
                           try {
                             const output = `data: ${JSON.stringify({ choices: [{ delta: { content: contentToSend } }] })}\n\n`;
                             controller.enqueue(new TextEncoder().encode(output));
-                            // 记录流式内容日志
-                            logStream(requestId, contentToSend, delta);
                           } catch (e) {
                             console.warn('发送内容失败:', e);
                             streamClosed = true;

@@ -155,8 +155,8 @@ var (
 
 	// 日志配置
 	enableDetailedLogging = getEnv("ENABLE_DETAILED_LOGGING", "true") == "true"
-	logUserMessages       = getEnv("LOG_USER_MESSAGES", "true") == "true"
-	logResponseContent    = getEnv("LOG_RESPONSE_CONTENT", "true") == "true"
+	logUserMessages       = getEnv("LOG_USER_MESSAGES", "false") == "true"
+	logResponseContent    = getEnv("LOG_RESPONSE_CONTENT", "false") == "true"
 
 	// 支持的模型
 	supportedModels = []Model{
@@ -308,7 +308,7 @@ func logStructured(data interface{}) {
 	fmt.Println(string(jsonData))
 }
 
-func logRequest(requestID, clientIP, apiKey, model string, messages interface{}, parameters interface{}, userAgent string) {
+func logRequest(requestID, clientIP, apiKey, model string, messageCount int, parameters interface{}, userAgent string) {
 	if !enableDetailedLogging {
 		return
 	}
@@ -324,16 +324,16 @@ func logRequest(requestID, clientIP, apiKey, model string, messages interface{},
 		UserAgent: userAgent,
 	}
 
-	if logUserMessages {
-		requestLog.Messages = messages
+	// 只记录消息数量，不记录具体内容
+	requestLog.Parameters = map[string]interface{}{
+		"message_count": messageCount,
+		"parameters":    parameters,
 	}
-
-	requestLog.Parameters = parameters
 
 	logStructured(requestLog)
 }
 
-func logResponse(requestID string, statusCode int, responseTime int64, endpoint string, retryCount int, content interface{}, reasoningContent, errorMsg string) {
+func logResponse(requestID string, statusCode int, responseTime int64, endpoint string, retryCount int, errorMsg string) {
 	if !enableDetailedLogging {
 		return
 	}
@@ -357,30 +357,12 @@ func logResponse(requestID string, statusCode int, responseTime int64, endpoint 
 		Error:        errorMsg,
 	}
 
-	if logResponseContent {
-		responseLog.Content = content
-		responseLog.ReasoningContent = reasoningContent
-	}
+	// 不记录响应内容，只记录技术指标
 
 	logStructured(responseLog)
 }
 
-func logStream(requestID string, content interface{}, delta interface{}) {
-	if !enableDetailedLogging || !logResponseContent {
-		return
-	}
-
-	streamLog := StreamLog{
-		RequestID: requestID,
-		Timestamp: time.Now().Format(time.RFC3339),
-		Level:     LogLevelInfo,
-		Type:      "stream",
-		Content:   content,
-		Delta:     delta,
-	}
-
-	logStructured(streamLog)
-}
+// logStream 函数已移除，不再记录流式内容
 
 // 带重试和多端点的请求函数
 func fetchWithRetry(ctx context.Context, body []byte) (*http.Response, error) {
@@ -515,7 +497,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		errorCount++
-		logResponse(requestID, http.StatusBadRequest, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Failed to read request body")
+		logResponse(requestID, http.StatusBadRequest, time.Since(startTime).Milliseconds(), "", 0, "Failed to read request body")
 		http.Error(w, `{"error": "Failed to read request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -536,7 +518,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !validKey {
 		errorCount++
-		logResponse(requestID, http.StatusUnauthorized, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Unauthorized")
+		logResponse(requestID, http.StatusUnauthorized, time.Since(startTime).Milliseconds(), "", 0, "Unauthorized")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
@@ -547,7 +529,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	var chatReq ChatRequest
 	if err := json.Unmarshal(body, &chatReq); err != nil {
 		errorCount++
-		logResponse(requestID, http.StatusBadRequest, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Invalid JSON format")
+		logResponse(requestID, http.StatusBadRequest, time.Since(startTime).Milliseconds(), "", 0, "Invalid JSON format")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid JSON format"})
@@ -560,7 +542,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		"temperature": chatReq.Temperature,
 		"max_tokens":  chatReq.MaxTokens,
 	}
-	logRequest(requestID, clientIP, key, chatReq.Model, chatReq.Messages, parameters, userAgent)
+	logRequest(requestID, clientIP, key, chatReq.Model, len(chatReq.Messages), parameters, userAgent)
 
 	isStream := chatReq.Stream != nil && *chatReq.Stream
 
@@ -574,7 +556,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		responseTime := time.Since(startTime)
 		totalResponseTime += int64(responseTime.Milliseconds())
 
-		logResponse(requestID, http.StatusBadGateway, responseTime.Milliseconds(), "all_endpoints", maxRetries, nil, "", err.Error())
+		logResponse(requestID, http.StatusBadGateway, responseTime.Milliseconds(), "all_endpoints", maxRetries, err.Error())
 		log.Printf("DeepInfra API 所有端点请求失败: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
@@ -595,7 +577,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		responseBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			errorCount++
-			logResponse(requestID, http.StatusInternalServerError, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Failed to read response")
+			logResponse(requestID, http.StatusInternalServerError, time.Since(startTime).Milliseconds(), "", 0, "Failed to read response")
 			http.Error(w, `{"error": "Failed to read response"}`, http.StatusInternalServerError)
 			return
 		}
@@ -603,13 +585,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		responseTime := time.Since(startTime)
 		totalResponseTime += int64(responseTime.Milliseconds())
 
-		// 解析响应内容用于日志记录
-		var responseContent interface{}
-		if logResponseContent {
-			json.Unmarshal(responseBody, &responseContent)
-		}
-
-		logResponse(requestID, resp.StatusCode, responseTime.Milliseconds(), "deepinfra_api", 0, responseContent, "", "")
+		logResponse(requestID, resp.StatusCode, responseTime.Milliseconds(), "deepinfra_api", 0, "")
 		log.Printf("✅ 请求完成: %v", responseTime)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -718,8 +694,6 @@ func processLine(line string, isInThinkBlock *bool, bufferedThinkContent *string
 					// 发送正常内容
 					if contentToSend != nil && *contentToSend != "" {
 						sendContent(*contentToSend, w, flusher)
-						// 记录流式内容日志
-						logStream(requestID, *contentToSend, delta)
 					}
 				}
 			} else {
