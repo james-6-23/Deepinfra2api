@@ -118,6 +118,7 @@ serve(async (req: Request) => {
     }
 
     // ✅ 流式响应处理（SSE）
+    // ✅ 流式响应处理（SSE）
     const stream = new ReadableStream({
       async start(controller) {
         const reader = response.body?.getReader();
@@ -126,21 +127,49 @@ serve(async (req: Request) => {
         // ✅ 新增：状态变量，用于合并连续的 think 块
         let isInThinkBlock = false;
         let bufferedThinkContent = "";
+        let isClosed = false;
 
-        while (reader) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value);
-          
-          try {
+        // 安全的入队函数
+        const safeEnqueue = (data: Uint8Array) => {
+          if (!isClosed) {
+            try {
+              controller.enqueue(data);
+            } catch (error) {
+              console.warn('流入队失败:', error);
+              isClosed = true;
+            }
+          }
+        };
+
+        // 安全的关闭函数
+        const safeClose = () => {
+          if (!isClosed) {
+            try {
+              controller.close();
+              isClosed = true;
+            } catch (error) {
+              console.warn('流关闭失败:', error);
+              isClosed = true;
+            }
+          }
+        };
+
+        try {
+          while (reader && !isClosed) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            
             for (const line of chunk.split("\n")) {
+              if (isClosed) break;
+              
               if (line.startsWith("data: ")) {
                 const jsonText = line.slice(6);
                 if (jsonText === "[DONE]") {
                   // ✅ 处理流结束：如果有缓存的思考内容，先发送
-                  if (isInThinkBlock && bufferedThinkContent) {
+                  if (isInThinkBlock && bufferedThinkContent && !isClosed) {
                     const output = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
-                    controller.enqueue(new TextEncoder().encode(output));
+                    safeEnqueue(new TextEncoder().encode(output));
                     bufferedThinkContent = "";
                     isInThinkBlock = false;
                   }
@@ -150,21 +179,17 @@ serve(async (req: Request) => {
                   const parsed = JSON.parse(jsonText) as StreamResponse;
                   const delta = parsed.choices?.[0]?.delta;
                   
-                  if (!delta) continue;
+                  if (!delta || isClosed) continue;
                   
                   // ✅ 处理 reasoning_content 和 content
                   let contentToSend: string | null = null;
-                  let isThinkContent = false;
 
                   // 检查是否是思考内容
                   if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
-                    isThinkContent = true;
-                    
                     // 如果是思考内容，先缓冲起来，不立即发送
                     if (delta.reasoning_content) {
                       bufferedThinkContent += delta.reasoning_content;
                     }
-                    
                     // 标记当前处于思考块中
                     isInThinkBlock = true;
                   } 
@@ -175,21 +200,20 @@ serve(async (req: Request) => {
                   // 如果遇到正常内容但当前在思考块中，说明思考块结束
                   else if (delta.content !== undefined && delta.content !== null && isInThinkBlock) {
                     // 先发送已缓冲的思考内容
-                    if (bufferedThinkContent) {
+                    if (bufferedThinkContent && !isClosed) {
                       const thinkOutput = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
-                      controller.enqueue(new TextEncoder().encode(thinkOutput));
+                      safeEnqueue(new TextEncoder().encode(thinkOutput));
                       bufferedThinkContent = "";
                       isInThinkBlock = false;
                     }
-                    
                     // 然后发送正常内容
                     contentToSend = delta.content;
                   }
 
                   // 发送非思考内容
-                  if (contentToSend !== null) {
+                  if (contentToSend !== null && !isClosed) {
                     const output = `data: ${JSON.stringify({ choices: [{ delta: { content: contentToSend } }] })}\n\n`;
-                    controller.enqueue(new TextEncoder().encode(output));
+                    safeEnqueue(new TextEncoder().encode(output));
                   }
                   
                 } catch (error) {
@@ -198,28 +222,21 @@ serve(async (req: Request) => {
                 }
               }
             }
-          } catch (error) {
-            console.warn('流处理错误:', error);
-            break;
           }
-        }
 
-        try {
           // ✅ 再次确保所有缓冲的内容都已发送
-          if (isInThinkBlock && bufferedThinkContent) {
+          if (isInThinkBlock && bufferedThinkContent && !isClosed) {
             const output = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
-            controller.enqueue(new TextEncoder().encode(output));
+            safeEnqueue(new TextEncoder().encode(output));
           }
 
-          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-        } catch (error) {
-          console.warn('最终数据发送失败:', error);
-        } finally {
-          try {
-            controller.close();
-          } catch (error) {
-            console.warn('流关闭失败:', error);
+          if (!isClosed) {
+            safeEnqueue(new TextEncoder().encode("data: [DONE]\n\n"));
           }
+        } catch (error) {
+          console.error('流处理错误:', error);
+        } finally {
+          safeClose();
         }
       }
     });

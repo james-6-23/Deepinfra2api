@@ -125,95 +125,116 @@ async function handler(req: Request): Promise<Response> {
     // ✅ 流式响应处理（SSE）
     const stream = new ReadableStream({
       async start(controller) {
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        
-        // ✅ 新增：状态变量，用于合并连续的 think 块
-        let isInThinkBlock = false;
-        let bufferedThinkContent = "";
-
         try {
-          while (reader) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            
-            for (const line of chunk.split("\n")) {
-              if (line.startsWith("data: ")) {
-                const jsonText = line.slice(6);
-                if (jsonText === "[DONE]") {
-                  // ✅ 处理流结束：如果有缓存的思考内容，先发送
-                  if (isInThinkBlock && bufferedThinkContent) {
-                    const output = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
-                    controller.enqueue(new TextEncoder().encode(output));
-                    bufferedThinkContent = "";
-                    isInThinkBlock = false;
-                  }
-                  break;
-                }
-                try {
-                  const parsed = JSON.parse(jsonText) as StreamResponse;
-                  const delta = parsed.choices?.[0]?.delta;
-                  
-                  if (!delta) continue;
-                  
-                  // ✅ 处理 reasoning_content 和 content
-                  let contentToSend: string | null = null;
+          const reader = response.body?.getReader();
+          if (!reader) {
+            controller.close();
+            return;
+          }
+          
+          const decoder = new TextDecoder();
+          let isInThinkBlock = false;
+          let bufferedThinkContent = "";
+          let streamClosed = false;
 
-                  // 检查是否是思考内容
-                  if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
-                    // 如果是思考内容，先缓冲起来，不立即发送
-                    if (delta.reasoning_content) {
-                      bufferedThinkContent += delta.reasoning_content;
+          while (true) {
+            try {
+              const { done, value } = await reader.read();
+              if (done || streamClosed) break;
+              
+              const chunk = decoder.decode(value);
+              const lines = chunk.split("\n");
+              
+              for (const line of lines) {
+                if (streamClosed) break;
+                
+                if (line.startsWith("data: ")) {
+                  const jsonText = line.slice(6).trim();
+                  
+                  if (jsonText === "[DONE]") {
+                    // 处理流结束
+                    if (isInThinkBlock && bufferedThinkContent) {
+                      try {
+                        const output = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
+                        controller.enqueue(new TextEncoder().encode(output));
+                      } catch (e) {
+                        console.warn('发送思考内容失败:', e);
+                      }
                     }
-                    // 标记当前处于思考块中
-                    isInThinkBlock = true;
-                  } 
-                  // 检查是否是正常内容且当前不在思考块中
-                  else if (delta.content !== undefined && delta.content !== null && !isInThinkBlock) {
-                    contentToSend = delta.content;
-                  }
-                  // 如果遇到正常内容但当前在思考块中，说明思考块结束
-                  else if (delta.content !== undefined && delta.content !== null && isInThinkBlock) {
-                    // 先发送已缓冲的思考内容
-                    if (bufferedThinkContent) {
-                      const thinkOutput = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
-                      controller.enqueue(new TextEncoder().encode(thinkOutput));
-                      bufferedThinkContent = "";
-                      isInThinkBlock = false;
+                    
+                    try {
+                      controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+                    } catch (e) {
+                      console.warn('发送 DONE 失败:', e);
                     }
-                    // 然后发送正常内容
-                    contentToSend = delta.content;
-                  }
-
-                  // 发送非思考内容
-                  if (contentToSend !== null) {
-                    const output = `data: ${JSON.stringify({ choices: [{ delta: { content: contentToSend } }] })}\n\n`;
-                    controller.enqueue(new TextEncoder().encode(output));
+                    streamClosed = true;
+                    break;
                   }
                   
-                } catch (error) {
-                  console.warn('JSON 解析错误:', error);
-                  // 继续处理其他块
+                  if (jsonText) {
+                    try {
+                      const parsed = JSON.parse(jsonText) as StreamResponse;
+                      const delta = parsed.choices?.[0]?.delta;
+                      
+                      if (delta) {
+                        let contentToSend: string | null = null;
+                        
+                        // 处理思考内容
+                        if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
+                          if (delta.reasoning_content) {
+                            bufferedThinkContent += delta.reasoning_content;
+                          }
+                          isInThinkBlock = true;
+                        }
+                        // 处理正常内容
+                        else if (delta.content !== undefined && delta.content !== null) {
+                          if (isInThinkBlock) {
+                            // 发送思考内容
+                            if (bufferedThinkContent) {
+                              try {
+                                const thinkOutput = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
+                                controller.enqueue(new TextEncoder().encode(thinkOutput));
+                              } catch (e) {
+                                console.warn('发送思考内容失败:', e);
+                              }
+                              bufferedThinkContent = "";
+                            }
+                            isInThinkBlock = false;
+                          }
+                          contentToSend = delta.content;
+                        }
+                        
+                        // 发送正常内容
+                        if (contentToSend !== null) {
+                          try {
+                            const output = `data: ${JSON.stringify({ choices: [{ delta: { content: contentToSend } }] })}\n\n`;
+                            controller.enqueue(new TextEncoder().encode(output));
+                          } catch (e) {
+                            console.warn('发送内容失败:', e);
+                            streamClosed = true;
+                            break;
+                          }
+                        }
+                      }
+                    } catch (parseError) {
+                      // 静默忽略 JSON 解析错误
+                    }
+                  }
                 }
               }
+            } catch (readError) {
+              console.warn('读取数据失败:', readError);
+              streamClosed = true;
+              break;
             }
           }
-
-          // ✅ 再次确保所有缓冲的内容都已发送
-          if (isInThinkBlock && bufferedThinkContent) {
-            const output = `data: ${JSON.stringify({ choices: [{ delta: { content: `<think>${bufferedThinkContent}</think>` } }] })}\n\n`;
-            controller.enqueue(new TextEncoder().encode(output));
-          }
-
-          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
         } catch (error) {
           console.error('流处理错误:', error);
         } finally {
           try {
             controller.close();
-          } catch (error) {
-            console.warn('流关闭失败:', error);
+          } catch (closeError) {
+            // 静默忽略关闭错误
           }
         }
       }
