@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Node.js (如果有)
+node_modules
+npm-debug.log
+
+# Deno
+.deno
+deno.lock
+
+# 编辑器
+.vscode
+.idea
+*.swp
+*.swo
+
+# 日志
+*.log
+logs
+
+# 临时文件
+tmp
+temp
+.tmp
+
+# 部署相关
+deploy.log
+.env
+
+# 其他
+.DS_Store
+Thumbs.db
+
+# Docker 文件
+Dockerfile
+docker-compose.yml
+nginx.conf
+deploy.sh

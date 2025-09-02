@@ -3,29 +3,11 @@
     "lib": ["deno.window"],
     "strict": true
   },
-  "fmt": {
-    "files": {
-      "include": ["index.ts"]
-    },
-    "options": {
-      "useTabs": false,
-      "lineWidth": 80,
-      "indentWidth": 2,
-      "semiColons": true,
-      "singleQuote": false,
-      "proseWrap": "preserve"
-    }
-  },
-  "lint": {
-    "files": {
-      "include": ["index.ts"]
-    },
-    "rules": {
-      "tags": ["recommended"]
-    }
-  },
   "tasks": {
-    "start": "deno run --allow-net index.ts",
-    "dev": "deno run --allow-net --watch index.ts"
+    "start": "deno run --allow-net --allow-env app.ts",
+    "dev": "deno run --allow-net --allow-env --watch app.ts",
+    "docker:build": "docker build -t deepinfra-proxy .",
+    "docker:run": "docker run -p 8000:8000 deepinfra-proxy",
+    "deploy": "./deploy.sh"
   }
 }

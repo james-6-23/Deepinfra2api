@@ -1,0 +1,36 @@
+# 环境变量文件
+.env
+.env.local
+.env.production
+
+# 动态生成的配置文件
+nginx.conf
+
+# Docker 数据目录
+warp-data/
+
+# 日志文件
+logs/
+*.log
+
+# 临时文件
+tmp/
+temp/
+.tmp/
+
+# 编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Node.js (如果有)
+node_modules/
+npm-debug.log
+
+# Deno
+.deno/

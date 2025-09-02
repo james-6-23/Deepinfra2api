@@ -20,6 +20,8 @@ SUPPORTED_MODELS = [
     {"id": "deepseek-ai/DeepSeek-R1-0528-Turbo", "object": "model"},
     {"id": "deepseek-ai/DeepSeek-V3-0324-Turbo", "object": "model"},
     {"id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-Turbo", "object": "model"},
+    {id: "zai-org/GLM-4.5-Air", object: "model"},
+    {id: "deepseek-ai/DeepSeek-V3.1", object: "model" }
 ]
 
 # --- FastAPI 应用实例 ---
