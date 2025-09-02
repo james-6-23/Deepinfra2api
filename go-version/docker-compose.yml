@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  deepinfra-proxy-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - PORT=8000
+      - PERFORMANCE_MODE=balanced
+      - MAX_RETRIES=3
+      - RETRY_DELAY=1000
+      - REQUEST_TIMEOUT=30000
+      - RANDOM_DELAY_MIN=100
+      - RANDOM_DELAY_MAX=500
+      - ENABLE_DETAILED_LOGGING=true
+      - LOG_USER_MESSAGES=false
+      - LOG_RESPONSE_CONTENT=false
+      - VALID_API_KEYS=linux.do
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - deepinfra-network
+
+networks:
+  deepinfra-network:
+    driver: bridge
