@@ -47,7 +47,58 @@ Deepinfra2api/
 
 ## 🚀 快速开始
 
-### 方式一：Docker Compose 部署（推荐）
+### 方式一：快速启动脚本（推荐）
+
+最简单的部署方式，提供交互式菜单和自动化配置：
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/james-6-23/DeepInfra2API.git
+cd DeepInfra2API
+
+# 2. 运行快速启动脚本
+chmod +x quick-start.sh
+./quick-start.sh
+```
+
+**脚本功能特色**：
+- 🎯 **15种部署选项**：涵盖 Deno/Go/双版本 × 基础/多端点/WARP/多端点+WARP 的所有组合
+- 🔌 **智能端口管理**：自动检测端口冲突，支持自动分配或手动指定可用端口
+- 🔄 **循环交互菜单**：支持连续操作，无需重复运行脚本
+- 🧪 **内置测试功能**：一键测试部署结果，包括健康检查、API调用验证
+- 📊 **实时状态监控**：显示服务状态、日志查看、容器管理
+- ⚙️ **自动环境配置**：自动创建和更新 .env 配置文件
+
+**快速启动脚本菜单选项**：
+
+```
+🎯 请选择部署方案:
+
+📦 Deno 版本部署 (端口 8000) - 推荐用于开发
+  1) Deno 基础版
+  2) Deno + 多端点负载均衡  
+  3) Deno + WARP 代理
+  4) Deno + 多端点 + WARP 代理
+
+🐹 Go 版本部署 (端口 8001) - 推荐用于生产
+  5) Go 基础版
+  6) Go + 多端点负载均衡
+  7) Go + WARP 代理
+  8) Go + 多端点 + WARP 代理
+
+🔄 双版本部署
+  9) 双版本基础部署
+  10) 双版本 + 多端点负载均衡
+  11) 双版本 + WARP 代理
+  12) 双版本 + 多端点 + WARP 代理
+
+🛠️ 管理操作
+  13) 测试部署
+  14) 查看服务状态
+  15) 停止所有服务
+```
+
+### 方式二：Docker Compose 部署
 
 根据项目规范，用户偏好直接使用 Docker Compose 进行部署：
 
@@ -77,7 +128,7 @@ docker compose --profile deno --profile go up -d --build
 docker compose --profile warp --profile deno --profile go up -d --build
 ```
 
-### 方式二：分步启动（避免跨 Profile 依赖）
+### 方式三：分步启动（避免跨 Profile 依赖）
 
 当存在服务依赖关系时，应采用分步启动策略：
 
@@ -95,7 +146,7 @@ docker compose --profile deno up -d --build
 docker compose --profile go up -d --build
 ```
 
-### 方式三：独立部署
+### 方式四：独立部署
 
 ```bash
 # Deno 版本独立部署
@@ -646,6 +697,100 @@ WARP_ENABLED=true                          # 启用 WARP 服务
 - ✅ 更适合生产环境
 - ❌ 开发周期相对较长
 
+## 🛠️ 快速启动脚本详细指南
+
+### 脚本功能详解
+
+**端口管理功能**：
+- 🔍 自动检测端口冲突，支持 netstat、ss、lsof 等多种检测方式
+- 🔢 自动分配可用端口（从 8000 开始扫描）
+- ✏️ 手动指定端口（支持 1024-65535 范围验证）
+- 📊 显示端口状态和占用情况
+
+**部署配置功能**：
+- 🌐 自动配置单端点或多端点负载均衡
+- 🔒 WARP 代理集成，增强网络连接稳定性
+- ⚙️ 自动更新 .env 环境变量配置
+- 🔄 支持双版本同时部署进行对比测试
+
+**测试与监控功能**：
+- 🧪 一键测试部署结果，包括健康检查、模型列表、聊天 API
+- 📊 实时显示服务状态和容器信息
+- 📄 提供详细的日志查看命令
+- 🛡️ 故障排除建议和解决方案
+
+### 使用最佳实践
+
+**新手用户推荐流程**：
+```bash
+# 1. 首次使用，选择简单配置
+./quick-start.sh
+# 选择: 1) Deno 基础版 或 5) Go 基础版
+
+# 2. 测试部署是否成功
+# 选择: 13) 测试部署
+
+# 3. 如果需要更高稳定性，升级到多端点配置
+# 选择: 2) Deno + 多端点 或 6) Go + 多端点
+```
+
+**生产环境推荐流程**：
+```bash
+# 1. 生产环境推荐使用 Go 版本 + 多端点 + WARP
+./quick-start.sh
+# 选择: 8) Go + 多端点 + WARP 代理
+
+# 2. 等待 WARP 启动完成（约 30 秒）
+# 选择: 14) 查看服务状态
+
+# 3. 测试所有功能
+# 选择: 13) 测试部署
+```
+
+**开发环境推荐流程**：
+```bash
+# 1. 开发环境优先选择 Deno 版本
+./quick-start.sh
+# 选择: 1) Deno 基础版
+
+# 2. 如需对比测试，启动双版本
+# 选择: 9) 双版本基础部署
+
+# 3. 实时监控开发进度
+# 选择: 14) 查看服务状态
+```
+
+### 常用操作命令
+
+**直接命令启动**（绕过交互菜单）：
+```bash
+# 快速启动 Deno 基础版
+echo "1" | ./quick-start.sh
+
+# 快速启动 Go + 多端点 + WARP
+echo "8" | ./quick-start.sh
+
+# 快速测试部署
+echo "13" | ./quick-start.sh
+```
+
+**管理命令**：
+```bash
+# 查看所有服务状态
+docker compose ps
+
+# 查看实时日志
+docker compose logs -f deepinfra-proxy-deno
+docker compose logs -f deepinfra-proxy-go
+docker compose logs -f deepinfra-warp
+
+# 停止所有服务
+docker compose down
+
+# 重启特定服务
+docker compose restart deepinfra-proxy-go
+```
+
 ## 🛠️ 管理命令
 
 ### 查看服务状态
@@ -680,17 +825,57 @@ docker compose down
    # 检查端口占用
    netstat -tuln | grep 8000
    # 修改 .env 文件中的端口配置
+   
+   # 或使用快速启动脚本的自动端口分配功能
+   ./quick-start.sh
+   # 选择任意部署选项，脚本会自动检测并解决端口冲突
    ```
 
 2. **API 密钥无效**
    ```bash
    # 检查 .env 文件中的 VALID_API_KEYS 配置
+   cat .env | grep VALID_API_KEYS
+   
+   # 使用快速启动脚本测试 API 密钥
+   ./quick-start.sh
+   # 选择: 13) 测试部署 - 会自动测试 API 调用
    ```
 
 3. **容器启动失败**
    ```bash
    # 查看日志
    docker compose logs -f
+   
+   # 使用快速启动脚本查看状态
+   ./quick-start.sh
+   # 选择: 14) 查看服务状态
+   ```
+
+4. **快速启动脚本权限问题**
+   ```bash
+   # 给脚本添加执行权限
+   chmod +x quick-start.sh
+   
+   # 如果仍然无法执行，检查文件格式
+   file quick-start.sh
+   # 应该显示为 POSIX shell script
+   
+   # Windows 用户在 Git Bash 或 WSL 中运行
+   bash quick-start.sh
+   ```
+
+5. **WARP 代理连接失败**
+   ```bash
+   # 检查 WARP 服务状态
+   docker compose logs deepinfra-warp
+   
+   # 重启 WARP 服务
+   docker compose restart deepinfra-warp
+   
+   # 等待 30-60 秒让 WARP 完全启动
+   # 使用快速启动脚本测试
+   ./quick-start.sh
+   # 选择: 13) 测试部署
    ```
 
 ### 网络连接问题
@@ -701,9 +886,76 @@ docker exec deepinfra-proxy-go curl -f http://localhost:8000/health
 
 # 测试 WARP 代理
 docker exec deepinfra-warp curl --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
+
+# 使用快速启动脚本进行自动测试
+./quick-start.sh
+# 选择: 13) 测试部署 - 包含完整的网络连接测试
+```
+
+### 性能问题排查
+```bash
+# 使用快速启动脚本查看资源使用
+./quick-start.sh
+# 选择: 14) 查看服务状态
+
+# 手动查看资源使用
+docker stats deepinfra-proxy-deno deepinfra-proxy-go deepinfra-warp
+
+# 查看详细性能指标
+docker exec deepinfra-proxy-go curl -s http://localhost:8000/health | jq .
+```
+
+### 快速启动脚本故障排除
+
+**脚本无法运行**：
+```bash
+# 检查系统兼容性
+# Linux/macOS:
+bash --version
+
+# Windows 用户需要使用 Git Bash 或 WSL
+# 在 Git Bash 中运行:
+bash quick-start.sh
+
+# 在 WSL 中运行:
+wsl bash quick-start.sh
+```
+
+**端口检测失败**：
+```bash
+# 脚本依赖以下工具之一：netstat, ss, lsof, nc
+# Ubuntu/Debian 安装:
+sudo apt-get install net-tools
+
+# CentOS/RHEL 安装:
+sudo yum install net-tools
+
+# macOS 安装:
+brew install netcat
+```
+
+**Docker 命令失败**：
+```bash
+# 检查 Docker 是否正常运行
+docker --version
+docker compose version
+
+# 检查 Docker 服务状态
+sudo systemctl status docker
+
+# 启动 Docker 服务
+sudo systemctl start docker
 ```
 
 ## 📄 最佳实践
+
+### 初学者推荐流程
+
+**第一次使用**：
+1. 使用快速启动脚本进行初始部署
+2. 选择 Deno 基础版进行学习和测试
+3. 使用内置测试功能验证部署结果
+4. 通过编程语言示例学习 API 调用
 
 ### 生产环境部署
 1. 使用 Go 版本以获得更好的性能
@@ -716,18 +968,67 @@ docker exec deepinfra-warp curl --socks5-hostname 127.0.0.1:1080 https://cloudfl
 1. 使用 Deno 版本以获得更快的开发体验
 2. 使用 `fast` 性能模式减少延迟
 3. 可以不启用 WARP 代理简化配置
+4. 使用快速启动脚本的双版本部署进行对比测试
+
+### 部署方式选择指南
+
+| 场景 | 推荐方式 | 原因 |
+|------|----------|------|
+| 初学者 | 快速启动脚本 | 交互式菜单，降低学习门槛 |
+| 开发者 | Docker Compose | 精确控制，适合调试 |
+| 运维人员 | 独立部署 | 简化的生产环境管理 |
+| CI/CD | Docker Compose | 适合脚本化和自动化 |
 
 ### 错误处理
 - 实现重试机制处理临时网络问题
 - 监控 API 密钥有效性
 - 设置合理的超时时间
 - 记录详细的错误信息用于调试
+- 使用快速启动脚本的测试功能定期验证服务状态
 
 ### 性能优化
 - 根据负载选择合适的性能模式
 - 使用多端点分散请求负载
 - 适当调整重试参数和延迟设置
 - 监控响应时间和错误率
+- 使用快速启动脚本进行双版本性能对比
+
+### 监控和维护
+
+**日常监控**：
+```bash
+# 使用快速启动脚本进行定期检查
+./quick-start.sh
+# 选择: 13) 测试部署
+# 选择: 14) 查看服务状态
+
+# 手动监控命令
+watch -n 30 'curl -s http://localhost:8000/health | jq .'
+watch -n 30 'curl -s http://localhost:8001/health | jq .'
+```
+
+**资源监控**：
+```bash
+# 查看资源使用情况
+docker stats deepinfra-proxy-deno deepinfra-proxy-go deepinfra-warp
+
+# 查看磁盘使用
+docker system df
+
+# 清理无用资源
+docker system prune -f
+```
+
+**安全维护**：
+```bash
+# 定期更新镜像
+docker compose pull
+docker compose up -d --build
+
+# 检查安全漏洞
+docker scout cves deepinfra2api-deno
+docker scout cves deepinfra2api-go
+```
 
 ## ⚖️ 法律声明
 
