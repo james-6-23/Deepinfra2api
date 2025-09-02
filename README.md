@@ -31,7 +31,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-username/DeepInfra2API.git
+git clone https://github.com/james-6-23/DeepInfra2API.git
 cd DeepInfra2API
 
 # 运行统一启动脚本（15种部署选项）
