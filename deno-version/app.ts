@@ -27,6 +27,45 @@ interface StreamResponse {
   choices: Choice[];
 }
 
+// 日志系统类型定义
+type LogLevel = "INFO" | "WARN" | "ERROR";
+
+interface RequestLog {
+  request_id: string;
+  timestamp: string;
+  level: LogLevel;
+  type: "request";
+  client_ip: string;
+  api_key: string;
+  model: string;
+  messages?: ChatMessage[];
+  parameters?: Record<string, any>;
+  user_agent?: string;
+}
+
+interface ResponseLog {
+  request_id: string;
+  timestamp: string;
+  level: LogLevel;
+  type: "response";
+  status_code: number;
+  response_time_ms: number;
+  endpoint: string;
+  retry_count: number;
+  content?: any;
+  reasoning_content?: string;
+  error?: string;
+}
+
+interface StreamLog {
+  request_id: string;
+  timestamp: string;
+  level: LogLevel;
+  type: "stream";
+  content?: any;
+  delta?: any;
+}
+
 // 配置常量
 const DEEPINFRA_URL = "https://api.deepinfra.com/v1/openai/chat/completions";
 const PORT = parseInt(Deno.env.get("PORT") || "8000");
@@ -156,6 +195,150 @@ const getValidApiKeys = (): string[] => {
 
 const VALID_API_KEYS = getValidApiKeys();
 
+// 日志配置
+const ENABLE_DETAILED_LOGGING = Deno.env.get("ENABLE_DETAILED_LOGGING") !== "false";
+const LOG_USER_MESSAGES = Deno.env.get("LOG_USER_MESSAGES") !== "false";
+const LOG_RESPONSE_CONTENT = Deno.env.get("LOG_RESPONSE_CONTENT") !== "false";
+
+// 日志系统函数
+function generateRequestId(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return `req_${Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function maskApiKey(apiKey: string): string {
+  if (apiKey.length <= 8) {
+    return "*".repeat(apiKey.length);
+  }
+  return apiKey.slice(0, 4) + "*".repeat(apiKey.length - 8) + apiKey.slice(-4);
+}
+
+function getClientIp(request: Request): string {
+  // 检查 X-Forwarded-For 头
+  const xff = request.headers.get("X-Forwarded-For");
+  if (xff) {
+    const ips = xff.split(",");
+    if (ips.length > 0) {
+      return ips[0].trim();
+    }
+  }
+
+  // 检查 X-Real-IP 头
+  const xri = request.headers.get("X-Real-IP");
+  if (xri) {
+    return xri;
+  }
+
+  // 默认返回未知
+  return "unknown";
+}
+
+function logStructured(data: any): void {
+  if (!ENABLE_DETAILED_LOGGING) {
+    return;
+  }
+
+  try {
+    console.log(JSON.stringify(data));
+  } catch (error) {
+    console.error("日志序列化失败:", error);
+  }
+}
+
+function logRequest(
+  requestId: string,
+  clientIp: string,
+  apiKey: string,
+  model: string,
+  messages?: ChatMessage[],
+  parameters?: Record<string, any>,
+  userAgent?: string
+): void {
+  if (!ENABLE_DETAILED_LOGGING) {
+    return;
+  }
+
+  const requestLog: RequestLog = {
+    request_id: requestId,
+    timestamp: new Date().toISOString(),
+    level: "INFO",
+    type: "request",
+    client_ip: clientIp,
+    api_key: maskApiKey(apiKey),
+    model: model,
+    user_agent: userAgent,
+  };
+
+  if (LOG_USER_MESSAGES && messages) {
+    requestLog.messages = messages;
+  }
+
+  if (parameters) {
+    requestLog.parameters = parameters;
+  }
+
+  logStructured(requestLog);
+}
+
+function logResponse(
+  requestId: string,
+  statusCode: number,
+  responseTime: number,
+  endpoint: string,
+  retryCount: number,
+  content?: any,
+  reasoningContent?: string,
+  error?: string
+): void {
+  if (!ENABLE_DETAILED_LOGGING) {
+    return;
+  }
+
+  let level: LogLevel = "INFO";
+  if (statusCode >= 400) {
+    level = "ERROR";
+  } else if (statusCode >= 300) {
+    level = "WARN";
+  }
+
+  const responseLog: ResponseLog = {
+    request_id: requestId,
+    timestamp: new Date().toISOString(),
+    level: level,
+    type: "response",
+    status_code: statusCode,
+    response_time_ms: responseTime,
+    endpoint: endpoint,
+    retry_count: retryCount,
+    error: error,
+  };
+
+  if (LOG_RESPONSE_CONTENT) {
+    responseLog.content = content;
+    responseLog.reasoning_content = reasoningContent;
+  }
+
+  logStructured(responseLog);
+}
+
+function logStream(requestId: string, content?: any, delta?: any): void {
+  if (!ENABLE_DETAILED_LOGGING || !LOG_RESPONSE_CONTENT) {
+    return;
+  }
+
+  const streamLog: StreamLog = {
+    request_id: requestId,
+    timestamp: new Date().toISOString(),
+    level: "INFO",
+    type: "stream",
+    content: content,
+    delta: delta,
+  };
+
+  logStructured(streamLog);
+}
+
 // 支持的模型列表
 const SUPPORTED_MODELS = [
   { id: "openai/gpt-oss-120b", object: "model" },
@@ -223,7 +406,12 @@ async function handler(req: Request): Promise<Response> {
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
     const startTime = Date.now();
     requestCount++;
-    
+
+    // 生成请求 ID 和获取客户端信息
+    const requestId = generateRequestId();
+    const clientIp = getClientIp(req);
+    const userAgent = req.headers.get("User-Agent") || "";
+
     const body = await req.text();
     const headers = new Headers(req.headers);
 
@@ -231,6 +419,8 @@ async function handler(req: Request): Promise<Response> {
     const auth = headers.get("Authorization");
     const key = auth?.replace("Bearer ", "").trim();
     if (!key || !VALID_API_KEYS.includes(key)) {
+      const responseTime = Date.now() - startTime;
+      logResponse(requestId, 401, responseTime, "", 0, undefined, undefined, "Unauthorized");
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "Content-Type": "application/json" }
@@ -242,11 +432,21 @@ async function handler(req: Request): Promise<Response> {
     try {
       parsed = JSON.parse(body) as ChatRequest;
     } catch (error) {
+      const responseTime = Date.now() - startTime;
+      logResponse(requestId, 400, responseTime, "", 0, undefined, undefined, "Invalid JSON format");
       return new Response(JSON.stringify({ error: "Invalid JSON format" }), {
         status: 400,
         headers: { "Content-Type": "application/json" }
       });
     }
+
+    // 记录请求日志
+    const parameters = {
+      stream: parsed.stream,
+      temperature: parsed.temperature,
+      max_tokens: parsed.max_tokens,
+    };
+    logRequest(requestId, clientIp, key, parsed.model, parsed.messages, parameters, userAgent);
 
     const isStream = parsed.stream === true;
 
@@ -292,11 +492,13 @@ async function handler(req: Request): Promise<Response> {
       errorCount++;
       const responseTime = Date.now() - startTime;
       totalResponseTime += responseTime;
-      
+
+      const errorMsg = error instanceof Error ? error.message : "未知错误";
+      logResponse(requestId, 502, responseTime, "all_endpoints", MAX_RETRIES, undefined, undefined, errorMsg);
       console.error('DeepInfra API 所有端点请求失败:', error);
-      return new Response(JSON.stringify({ 
-        error: "External API request failed", 
-        details: error instanceof Error ? error.message : "未知错误",
+      return new Response(JSON.stringify({
+        error: "External API request failed",
+        details: errorMsg,
         retry_after: 60, // 建议客户端 60 秒后重试
         available_endpoints: API_ENDPOINTS.length,
         performance_mode: PERFORMANCE_MODE
@@ -311,9 +513,18 @@ async function handler(req: Request): Promise<Response> {
       const result = await response.text();
       const responseTime = Date.now() - startTime;
       totalResponseTime += responseTime;
-      
+
+      // 解析响应内容用于日志记录
+      let responseContent;
+      try {
+        responseContent = JSON.parse(result);
+      } catch {
+        responseContent = result;
+      }
+
+      logResponse(requestId, response.status, responseTime, "deepinfra_api", 0, responseContent, undefined, undefined);
       console.log(`✅ 请求完成: ${responseTime}ms`);
-      
+
       return new Response(result, {
         status: response.status,
         headers: { "Content-Type": "application/json" }
@@ -407,6 +618,8 @@ async function handler(req: Request): Promise<Response> {
                           try {
                             const output = `data: ${JSON.stringify({ choices: [{ delta: { content: contentToSend } }] })}\n\n`;
                             controller.enqueue(new TextEncoder().encode(output));
+                            // 记录流式内容日志
+                            logStream(requestId, contentToSend, delta);
                           } catch (e) {
                             console.warn('发送内容失败:', e);
                             streamClosed = true;
@@ -458,4 +671,10 @@ async function handler(req: Request): Promise<Response> {
 }
 
 // 启动服务器
+console.log(`🚀 DeepInfra API Proxy started on port ${PORT}`);
+console.log(`⚡ Performance mode: ${PERFORMANCE_MODE}`);
+console.log(`🔧 Config: retries=${MAX_RETRIES}, delay=${RETRY_DELAY}ms, timeout=${REQUEST_TIMEOUT}ms`);
+console.log(`⏱️  Random delay: ${config.randomDelayMin}-${config.randomDelayMax}ms`);
+console.log(`📝 Detailed logging: ${ENABLE_DETAILED_LOGGING}, User messages: ${LOG_USER_MESSAGES}, Response content: ${LOG_RESPONSE_CONTENT}`);
+
 serve(handler, { port: PORT });

@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -83,6 +86,51 @@ type ErrorResponse struct {
 	PerformanceMode    string `json:"performance_mode,omitempty"`
 }
 
+// 日志系统类型定义
+type LogLevel string
+
+const (
+	LogLevelInfo  LogLevel = "INFO"
+	LogLevelWarn  LogLevel = "WARN"
+	LogLevelError LogLevel = "ERROR"
+)
+
+type RequestLog struct {
+	RequestID  string      `json:"request_id"`
+	Timestamp  string      `json:"timestamp"`
+	Level      LogLevel    `json:"level"`
+	Type       string      `json:"type"`
+	ClientIP   string      `json:"client_ip"`
+	APIKey     string      `json:"api_key"`
+	Model      string      `json:"model"`
+	Messages   interface{} `json:"messages,omitempty"`
+	Parameters interface{} `json:"parameters,omitempty"`
+	UserAgent  string      `json:"user_agent,omitempty"`
+}
+
+type ResponseLog struct {
+	RequestID        string      `json:"request_id"`
+	Timestamp        string      `json:"timestamp"`
+	Level            LogLevel    `json:"level"`
+	Type             string      `json:"type"`
+	StatusCode       int         `json:"status_code"`
+	ResponseTime     int64       `json:"response_time_ms"`
+	Endpoint         string      `json:"endpoint"`
+	RetryCount       int         `json:"retry_count"`
+	Content          interface{} `json:"content,omitempty"`
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	Error            string      `json:"error,omitempty"`
+}
+
+type StreamLog struct {
+	RequestID string      `json:"request_id"`
+	Timestamp string      `json:"timestamp"`
+	Level     LogLevel    `json:"level"`
+	Type      string      `json:"type"`
+	Content   interface{} `json:"content,omitempty"`
+	Delta     interface{} `json:"delta,omitempty"`
+}
+
 // 全局配置
 var (
 	deepinfraURL = "https://api.deepinfra.com/v1/openai/chat/completions"
@@ -104,6 +152,11 @@ var (
 	requestCount      int64
 	totalResponseTime int64
 	errorCount        int64
+
+	// 日志配置
+	enableDetailedLogging = getEnv("ENABLE_DETAILED_LOGGING", "true") == "true"
+	logUserMessages       = getEnv("LOG_USER_MESSAGES", "true") == "true"
+	logResponseContent    = getEnv("LOG_RESPONSE_CONTENT", "true") == "true"
 
 	// 支持的模型
 	supportedModels = []Model{
@@ -200,6 +253,133 @@ func randomDelay() {
 
 func getRandomUserAgent() string {
 	return userAgents[rand.Intn(len(userAgents))]
+}
+
+// 日志系统函数
+func generateRequestID() string {
+	bytes := make([]byte, 8)
+	if _, err := rand.Read(bytes); err != nil {
+		// 如果加密随机数生成失败，使用时间戳作为备选
+		return fmt.Sprintf("req_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("req_%s", hex.EncodeToString(bytes))
+}
+
+func maskAPIKey(apiKey string) string {
+	if len(apiKey) <= 8 {
+		return strings.Repeat("*", len(apiKey))
+	}
+	return apiKey[:4] + strings.Repeat("*", len(apiKey)-8) + apiKey[len(apiKey)-4:]
+}
+
+func getClientIP(r *http.Request) string {
+	// 检查 X-Forwarded-For 头
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// 检查 X-Real-IP 头
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// 使用 RemoteAddr
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func logStructured(data interface{}) {
+	if !enableDetailedLogging {
+		return
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("日志序列化失败: %v", err)
+		return
+	}
+
+	fmt.Println(string(jsonData))
+}
+
+func logRequest(requestID, clientIP, apiKey, model string, messages interface{}, parameters interface{}, userAgent string) {
+	if !enableDetailedLogging {
+		return
+	}
+
+	requestLog := RequestLog{
+		RequestID: requestID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Level:     LogLevelInfo,
+		Type:      "request",
+		ClientIP:  clientIP,
+		APIKey:    maskAPIKey(apiKey),
+		Model:     model,
+		UserAgent: userAgent,
+	}
+
+	if logUserMessages {
+		requestLog.Messages = messages
+	}
+
+	requestLog.Parameters = parameters
+
+	logStructured(requestLog)
+}
+
+func logResponse(requestID string, statusCode int, responseTime int64, endpoint string, retryCount int, content interface{}, reasoningContent, errorMsg string) {
+	if !enableDetailedLogging {
+		return
+	}
+
+	level := LogLevelInfo
+	if statusCode >= 400 {
+		level = LogLevelError
+	} else if statusCode >= 300 {
+		level = LogLevelWarn
+	}
+
+	responseLog := ResponseLog{
+		RequestID:    requestID,
+		Timestamp:    time.Now().Format(time.RFC3339),
+		Level:        level,
+		Type:         "response",
+		StatusCode:   statusCode,
+		ResponseTime: responseTime,
+		Endpoint:     endpoint,
+		RetryCount:   retryCount,
+		Error:        errorMsg,
+	}
+
+	if logResponseContent {
+		responseLog.Content = content
+		responseLog.ReasoningContent = reasoningContent
+	}
+
+	logStructured(responseLog)
+}
+
+func logStream(requestID string, content interface{}, delta interface{}) {
+	if !enableDetailedLogging || !logResponseContent {
+		return
+	}
+
+	streamLog := StreamLog{
+		RequestID: requestID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Level:     LogLevelInfo,
+		Type:      "stream",
+		Content:   content,
+		Delta:     delta,
+	}
+
+	logStructured(streamLog)
 }
 
 // 带重试和多端点的请求函数
@@ -326,10 +506,16 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	requestCount++
 
+	// 生成请求 ID
+	requestID := generateRequestID()
+	clientIP := getClientIP(r)
+	userAgent := r.Header.Get("User-Agent")
+
 	// 读取请求体
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		errorCount++
+		logResponse(requestID, http.StatusBadRequest, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Failed to read request body")
 		http.Error(w, `{"error": "Failed to read request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -350,6 +536,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !validKey {
 		errorCount++
+		logResponse(requestID, http.StatusUnauthorized, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Unauthorized")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
@@ -360,11 +547,20 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	var chatReq ChatRequest
 	if err := json.Unmarshal(body, &chatReq); err != nil {
 		errorCount++
+		logResponse(requestID, http.StatusBadRequest, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Invalid JSON format")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid JSON format"})
 		return
 	}
+
+	// 记录请求日志
+	parameters := map[string]interface{}{
+		"stream":      chatReq.Stream,
+		"temperature": chatReq.Temperature,
+		"max_tokens":  chatReq.MaxTokens,
+	}
+	logRequest(requestID, clientIP, key, chatReq.Model, chatReq.Messages, parameters, userAgent)
 
 	isStream := chatReq.Stream != nil && *chatReq.Stream
 
@@ -378,6 +574,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		responseTime := time.Since(startTime)
 		totalResponseTime += int64(responseTime.Milliseconds())
 
+		logResponse(requestID, http.StatusBadGateway, responseTime.Milliseconds(), "all_endpoints", maxRetries, nil, "", err.Error())
 		log.Printf("DeepInfra API 所有端点请求失败: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
@@ -398,12 +595,21 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		responseBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			errorCount++
+			logResponse(requestID, http.StatusInternalServerError, time.Since(startTime).Milliseconds(), "", 0, nil, "", "Failed to read response")
 			http.Error(w, `{"error": "Failed to read response"}`, http.StatusInternalServerError)
 			return
 		}
 
 		responseTime := time.Since(startTime)
 		totalResponseTime += int64(responseTime.Milliseconds())
+
+		// 解析响应内容用于日志记录
+		var responseContent interface{}
+		if logResponseContent {
+			json.Unmarshal(responseBody, &responseContent)
+		}
+
+		logResponse(requestID, resp.StatusCode, responseTime.Milliseconds(), "deepinfra_api", 0, responseContent, "", "")
 		log.Printf("✅ 请求完成: %v", responseTime)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -413,11 +619,11 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 流式响应处理
-	handleStreamResponse(w, resp)
+	handleStreamResponse(w, resp, requestID)
 }
 
 // 流式响应处理
-func handleStreamResponse(w http.ResponseWriter, resp *http.Response) {
+func handleStreamResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -431,98 +637,133 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) {
 		return
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	// 使用更大的缓冲区来避免截断问题
+	reader := bufio.NewReaderSize(resp.Body, 1024*1024) // 1MB 缓冲区
 	isInThinkBlock := false
 	bufferedThinkContent := ""
+	streamClosed := false
 
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.HasPrefix(line, "data: ") {
-			jsonText := strings.TrimSpace(line[6:])
-
-			if jsonText == "[DONE]" {
-				// 发送缓存的思考内容
-				if isInThinkBlock && bufferedThinkContent != "" {
-					thinkData := map[string]interface{}{
-						"choices": []map[string]interface{}{
-							{
-								"delta": map[string]interface{}{
-									"content": fmt.Sprintf("<think>%s</think>", bufferedThinkContent),
-								},
-							},
-						},
-					}
-					if thinkJSON, err := json.Marshal(thinkData); err == nil {
-						fmt.Fprintf(w, "data: %s\n\n", string(thinkJSON))
-						flusher.Flush()
-					}
+	for !streamClosed {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				// 处理最后一行（可能没有换行符）
+				if line != "" {
+					processLine(line, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
 				}
-
-				fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
 				break
 			}
+			log.Printf("读取流数据失败: %v", err)
+			break
+		}
 
-			if jsonText != "" {
-				var streamResp StreamResponse
-				if err := json.Unmarshal([]byte(jsonText), &streamResp); err == nil {
-					if len(streamResp.Choices) > 0 {
-						delta := streamResp.Choices[0].Delta
+		// 处理每一行
+		if !streamClosed {
+			processLine(line, &isInThinkBlock, &bufferedThinkContent, &streamClosed, w, flusher, requestID)
+		}
+	}
 
-						var contentToSend *string
+	// 确保发送最后的思考内容
+	if isInThinkBlock && bufferedThinkContent != "" {
+		sendThinkContent(bufferedThinkContent, w, flusher)
+	}
+}
 
-						// 处理思考内容
-						if delta.ReasoningContent != nil {
-							if *delta.ReasoningContent != "" {
-								bufferedThinkContent += *delta.ReasoningContent
-							}
-							isInThinkBlock = true
-						} else if delta.Content != nil {
-							// 处理正常内容
-							if isInThinkBlock {
-								// 发送思考内容
-								if bufferedThinkContent != "" {
-									thinkData := map[string]interface{}{
-										"choices": []map[string]interface{}{
-											{
-												"delta": map[string]interface{}{
-													"content": fmt.Sprintf("<think>%s</think>", bufferedThinkContent),
-												},
-											},
-										},
-									}
-									if thinkJSON, err := json.Marshal(thinkData); err == nil {
-										fmt.Fprintf(w, "data: %s\n\n", string(thinkJSON))
-										flusher.Flush()
-									}
-									bufferedThinkContent = ""
-								}
-								isInThinkBlock = false
-							}
-							contentToSend = delta.Content
+// 处理单行数据
+func processLine(line string, isInThinkBlock *bool, bufferedThinkContent *string, streamClosed *bool, w http.ResponseWriter, flusher http.Flusher, requestID string) {
+	line = strings.TrimSpace(line)
+
+	if strings.HasPrefix(line, "data: ") {
+		jsonText := strings.TrimSpace(line[6:])
+
+		if jsonText == "[DONE]" {
+			// 发送缓存的思考内容
+			if *isInThinkBlock && *bufferedThinkContent != "" {
+				sendThinkContent(*bufferedThinkContent, w, flusher)
+			}
+
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			*streamClosed = true
+			return
+		}
+
+		if jsonText != "" {
+			var streamResp StreamResponse
+			if err := json.Unmarshal([]byte(jsonText), &streamResp); err == nil {
+				if len(streamResp.Choices) > 0 {
+					delta := streamResp.Choices[0].Delta
+
+					var contentToSend *string
+
+					// 处理思考内容
+					if delta.ReasoningContent != nil {
+						if *delta.ReasoningContent != "" {
+							*bufferedThinkContent += *delta.ReasoningContent
 						}
-
-						// 发送正常内容
-						if contentToSend != nil {
-							outputData := map[string]interface{}{
-								"choices": []map[string]interface{}{
-									{
-										"delta": map[string]interface{}{
-											"content": *contentToSend,
-										},
-									},
-								},
+						*isInThinkBlock = true
+					} else if delta.Content != nil {
+						// 处理正常内容
+						if *isInThinkBlock {
+							// 发送思考内容
+							if *bufferedThinkContent != "" {
+								sendThinkContent(*bufferedThinkContent, w, flusher)
+								*bufferedThinkContent = ""
 							}
-							if outputJSON, err := json.Marshal(outputData); err == nil {
-								fmt.Fprintf(w, "data: %s\n\n", string(outputJSON))
-								flusher.Flush()
-							}
+							*isInThinkBlock = false
 						}
+						contentToSend = delta.Content
+					}
+
+					// 发送正常内容
+					if contentToSend != nil && *contentToSend != "" {
+						sendContent(*contentToSend, w, flusher)
+						// 记录流式内容日志
+						logStream(requestID, *contentToSend, delta)
 					}
 				}
+			} else {
+				log.Printf("JSON 解析失败: %v, 内容: %s", err, jsonText)
 			}
 		}
+	}
+}
+
+// 发送思考内容
+func sendThinkContent(content string, w http.ResponseWriter, flusher http.Flusher) {
+	thinkData := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{
+				"delta": map[string]interface{}{
+					"content": fmt.Sprintf("<think>%s</think>", content),
+				},
+			},
+		},
+	}
+	if thinkJSON, err := json.Marshal(thinkData); err == nil {
+		fmt.Fprintf(w, "data: %s\n\n", string(thinkJSON))
+		flusher.Flush()
+	} else {
+		log.Printf("思考内容 JSON 编码失败: %v", err)
+	}
+}
+
+// 发送正常内容
+func sendContent(content string, w http.ResponseWriter, flusher http.Flusher) {
+	outputData := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{
+				"delta": map[string]interface{}{
+					"content": content,
+				},
+			},
+		},
+	}
+	if outputJSON, err := json.Marshal(outputData); err == nil {
+		fmt.Fprintf(w, "data: %s\n\n", string(outputJSON))
+		flusher.Flush()
+	} else {
+		log.Printf("内容 JSON 编码失败: %v", err)
 	}
 }
 
@@ -555,4 +796,5 @@ func init() {
 	log.Printf("⚡ Performance mode: %s", performanceMode)
 	log.Printf("🔧 Config: retries=%d, delay=%dms, timeout=%dms", maxRetries, retryDelay, requestTimeout)
 	log.Printf("⏱️  Random delay: %d-%dms", randomDelayMin, randomDelayMax)
+	log.Printf("📝 Detailed logging: %v, User messages: %v, Response content: %v", enableDetailedLogging, logUserMessages, logResponseContent)
 }
