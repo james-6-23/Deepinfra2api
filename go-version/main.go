@@ -11,7 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -246,13 +246,13 @@ func getValidAPIKeys() []string {
 
 func randomDelay() {
 	if randomDelayMax > randomDelayMin {
-		delay := rand.Intn(randomDelayMax-randomDelayMin) + randomDelayMin
+		delay := mathrand.Intn(randomDelayMax-randomDelayMin) + randomDelayMin
 		time.Sleep(time.Duration(delay) * time.Millisecond)
 	}
 }
 
 func getRandomUserAgent() string {
-	return userAgents[rand.Intn(len(userAgents))]
+	return userAgents[mathrand.Intn(len(userAgents))]
 }
 
 // 日志系统函数
@@ -787,7 +787,7 @@ func main() {
 }
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
+	mathrand.Seed(time.Now().UnixNano())
 	getPerformanceConfig()
 	apiEndpoints = getAPIEndpoints()
 	validAPIKeys = getValidAPIKeys()
