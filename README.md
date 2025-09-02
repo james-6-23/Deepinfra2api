@@ -1,37 +1,70 @@
 # DeepInfra API 代理服务器
 
-🚀 一个用 Deno + Docker + Nginx 构建的 DeepInfra API 代理服务器，提供 OpenAI 兼容的接口。
+🚀 一个高性能的 DeepInfra API 代理服务器，提供 OpenAI 兼容的接口。现在支持 **Deno/TypeScript** 和 **Go** 两种实现！
 
 ## ✨ 功能特性
 
+### 🎯 双语言支持
+- 🦕 **Deno/TypeScript 版本**：现代化开发体验，适合快速开发和原型
+- 🐹 **Go 版本**：高性能生产就绪，内存占用低，启动速度快
+
+### 🚀 核心功能
 - 🔐 自定义 API Key 验证
 - 📋 支持模型列表查询
 - 💬 聊天完成接口（支持流式响应）
 - 🧠 智能处理思考内容（reasoning_content）
 - 🐳 Docker 容器化部署
-- 🔒 Nginx 反向代理
 - 🌐 CORS 跨域支持
 - 📊 健康检查接口
 - 🚀 多端点负载均衡
 - 🛡️ 反封锁机制（WARP 代理）
-- ⚡ 性能模式配置
+- ⚡ 三种性能模式配置
+
+### 🏗️ 架构优势
+- 🔄 **简化架构**：移除 Nginx，直接暴露服务端口
+- 🎛️ **灵活部署**：可独立部署任一版本或同时运行
+- 📈 **性能监控**：内置请求统计和性能指标
+- 🛠️ **易于维护**：清晰的项目结构和完整的文档
 
 ## 🚀 快速部署
 
-### 方法一：直接使用 Docker Compose（推荐）
+### 🦕 部署 Deno 版本（推荐用于开发）
 
 ```bash
 # 1. 复制配置文件
 cp .env.example .env
 
-# 2. 编辑配置（可选）
-nano .env  # 或使用其他编辑器
+# 2. 启动 Deno 版本（端口 8000）
+docker compose --profile deno up -d --build
 
-# 3. 启动基础模式（仅 API 代理）
-docker compose --profile app up -d --build
+# 3. 带 WARP 代理启动
+docker compose --profile warp --profile deno up -d --build
 
-# 或启动完整模式（包含 WARP 代理）
-docker compose --profile warp --profile app up -d --build
+# 4. 测试服务
+curl http://localhost:8000/health
+```
+
+### 🐹 部署 Go 版本（推荐用于生产）
+
+```bash
+# 1. 启动 Go 版本（端口 8001）
+docker compose --profile go up -d --build
+
+# 2. 带 WARP 代理启动
+docker compose --profile warp --profile go up -d --build
+
+# 3. 测试服务
+curl http://localhost:8001/health
+```
+
+### 🔄 同时部署两个版本
+
+```bash
+# 同时启动进行对比测试
+docker compose --profile deno --profile go up -d --build
+
+# 带 WARP 代理
+docker compose --profile warp --profile deno --profile go up -d --build
 ```
 
 ### 方法二：手动步骤
@@ -653,16 +686,22 @@ iwr https://deno.land/install.ps1 -useb | iex
 ## 📁 项目结构
 
 ```
-.
-├── app.ts              # 主应用文件（唯一 TypeScript 文件）
-├── docker-compose.yml  # Docker Compose 配置
-├── Dockerfile          # Docker 构建文件
-├── nginx.conf          # Nginx 反向代理配置
-├── deno.json           # Deno 运行时配置
-├── .env.example        # 环境变量配置模板
-├── .dockerignore       # Docker 忽略文件
-├── .gitignore          # Git 忽略文件
-└── README.md           # 项目说明文档
+Deepinfra2api/
+├── deno-version/              # Deno/TypeScript 版本
+│   ├── app.ts                # 主应用文件
+│   ├── deno.json             # Deno 配置
+│   └── Dockerfile            # Deno 版本 Docker 配置
+├── go-version/               # Go 版本
+│   ├── main.go               # 主应用文件
+│   ├── go.mod                # Go 模块配置
+│   └── Dockerfile            # Go 版本 Docker 配置
+├── docker-compose.yml        # 统一的 Docker Compose 配置
+├── .env.example              # 环境变量配置模板
+├── quick-start.sh            # 快速启动脚本
+├── test-deployment.sh        # 自动化测试脚本
+├── DEPLOYMENT_GUIDE.md       # 详细部署指南
+├── PROJECT_STRUCTURE.md      # 项目结构说明
+└── README.md                 # 项目说明文档
 ```
 
 ### 🔍 文件说明
