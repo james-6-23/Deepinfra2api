@@ -478,6 +478,7 @@ show_menu() {
     echo "  17) 测试部署"
     echo "  18) 查看服务状态"
     echo "  19) 停止所有服务"
+    echo "  20) 重启所有服务（应用 .env 配置变更）"
     echo "  0) 退出"
     echo ""
 }
@@ -792,6 +793,119 @@ configure_warp_proxy() {
     fi
 }
 
+# 重启所有服务
+restart_all_services() {
+    echo -e "${CYAN}🔄 重启服务流程开始...${NC}"
+
+    # 检查当前运行的服务
+    echo -e "${BLUE}📊 检查当前服务状态...${NC}"
+    docker compose ps
+
+    echo ""
+    echo -e "${BLUE}🛑 停止所有服务...${NC}"
+    if docker compose down; then
+        echo -e "${GREEN}✅ 服务停止成功${NC}"
+    else
+        echo -e "${RED}❌ 服务停止失败${NC}"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${BLUE}⏳ 等待服务完全停止 (3秒)...${NC}"
+    sleep 3
+
+    echo ""
+    echo -e "${BLUE}🚀 重新启动服务...${NC}"
+
+    # 检测之前运行的服务类型
+    local restart_profiles=""
+
+    # 检查 .env 文件中的配置来确定要启动的服务
+    if [ -f .env ]; then
+        if grep -q "HTTP_PROXY=http://deepinfra-warp:1080" .env; then
+            restart_profiles="$restart_profiles --profile warp"
+            echo -e "${INFO} 检测到 WARP 代理配置"
+        fi
+
+        # 默认启动 Go 和 Deno 服务
+        restart_profiles="$restart_profiles --profile deno --profile go"
+        echo -e "${INFO} 将启动 Deno 和 Go 服务"
+    else
+        echo -e "${YELLOW}⚠️ 未找到 .env 文件，使用默认配置${NC}"
+        restart_profiles="--profile deno --profile go"
+    fi
+
+    echo -e "${CYAN}🔧 启动配置: $restart_profiles${NC}"
+
+    if docker compose $restart_profiles up -d --build; then
+        echo -e "${GREEN}✅ 服务重启成功${NC}"
+
+        echo ""
+        echo -e "${CYAN}⏳ 等待服务初始化 (10秒)...${NC}"
+        sleep 10
+
+        echo ""
+        echo -e "${BLUE}🧪 验证服务状态...${NC}"
+        docker compose ps
+
+        # 简单的健康检查
+        echo ""
+        local health_check_passed=true
+
+        if curl -s --connect-timeout 5 http://localhost:8000/health >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ Deno 服务健康检查通过${NC}"
+        else
+            echo -e "${YELLOW}⚠️ Deno 服务健康检查失败${NC}"
+            health_check_passed=false
+        fi
+
+        if curl -s --connect-timeout 5 http://localhost:8001/health >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ Go 服务健康检查通过${NC}"
+        else
+            echo -e "${YELLOW}⚠️ Go 服务健康检查失败${NC}"
+            health_check_passed=false
+        fi
+
+        if [[ "$restart_profiles" == *"warp"* ]]; then
+            if docker exec deepinfra-warp curl -s --connect-timeout 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+                echo -e "${GREEN}✅ WARP 代理验证通过${NC}"
+            else
+                echo -e "${YELLOW}⚠️ WARP 代理验证失败${NC}"
+                health_check_passed=false
+            fi
+        fi
+
+        echo ""
+        if [ "$health_check_passed" = true ]; then
+            echo -e "${GREEN}🎉 服务重启完成，所有服务运行正常！${NC}"
+        else
+            echo -e "${YELLOW}⚠️ 服务重启完成，但部分服务可能需要更多时间初始化${NC}"
+        fi
+
+        echo ""
+        echo -e "${BLUE}📋 服务访问地址:${NC}"
+        echo "  Deno 版本: http://localhost:8000"
+        echo "  Go 版本: http://localhost:8001"
+
+        echo ""
+        echo -e "${BLUE}📋 有用的命令:${NC}"
+        echo "  查看状态: docker compose ps"
+        echo "  查看日志: docker compose logs -f"
+        echo "  验证多端点: ./verify-multi-endpoints.sh"
+        if [[ "$restart_profiles" == *"warp"* ]]; then
+            echo "  验证WARP: ./verify-warp-proxy.sh"
+        fi
+
+    else
+        echo -e "${RED}❌ 服务重启失败${NC}"
+        echo -e "${BLUE}💡 故障排除建议:${NC}"
+        echo "  1. 检查 Docker 服务状态"
+        echo "  2. 查看错误日志: docker compose logs"
+        echo "  3. 检查端口占用情况"
+        return 1
+    fi
+}
+
 # 处理用户选择
 handle_choice() {
     local choice=$1
@@ -834,12 +948,16 @@ handle_choice() {
                 echo -e "${RED}❌ 停止服务失败${NC}"
             fi
             ;;
+        20)
+            echo -e "${BLUE}🔄 重启所有服务（应用 .env 配置变更）...${NC}"
+            restart_all_services
+            ;;
         0)
             echo -e "${GREEN}👋 感谢使用 DeepInfra2API！${NC}"
             exit 0
             ;;
         *)
-            echo -e "${RED}❌ 无效选择，请输入 0-15${NC}"
+            echo -e "${RED}❌ 无效选择，请输入 0-20${NC}"
             ;;
     esac
 }
@@ -850,7 +968,7 @@ main_loop() {
         show_title
         show_menu
 
-        read -p "请选择 (0-19): " choice
+        read -p "请选择 (0-20): " choice
         echo ""
 
         handle_choice "$choice"
