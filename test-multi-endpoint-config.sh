@@ -3,16 +3,42 @@
 # 多端点配置功能测试脚本
 # 用于测试交互式多端点配置和重启功能
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# 检测操作系统
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+    IS_WINDOWS=true
+    echo "检测到 Windows 环境，使用兼容模式"
+else
+    IS_WINDOWS=false
+fi
+
+# 颜色定义（Windows 兼容）
+if [ "$IS_WINDOWS" = true ]; then
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    CYAN=''
+    NC=''
+    INFO='[INFO]'
+else
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    NC='\033[0m'
+    INFO='ℹ️'
+fi
 
 echo -e "${BLUE}🧪 多端点配置功能测试${NC}"
 echo "=================================="
+
+# Windows 兼容性检查
+if [ "$IS_WINDOWS" = true ]; then
+    echo "注意: Windows 环境下某些功能可能受限"
+    echo "建议在 Linux 环境下进行完整测试"
+    echo ""
+fi
 
 # 备份原始 .env 文件
 if [ -f .env ]; then

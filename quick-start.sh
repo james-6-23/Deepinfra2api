@@ -20,10 +20,21 @@ show_title() {
     echo ""
 }
 
-# 更新环境变量函数
+# 更新环境变量函数（保护现有配置）
 update_env_var() {
     local var_name=$1
     local var_value=$2
+
+    # 确保 .env 文件存在
+    if [ ! -f .env ]; then
+        if [ -f .env.example ]; then
+            echo -e "${INFO} 从 .env.example 创建 .env 文件${NC}"
+            cp .env.example .env
+        else
+            echo -e "${INFO} 创建新的 .env 文件${NC}"
+            touch .env
+        fi
+    fi
 
     if grep -q "^${var_name}=" .env; then
         # 变量存在，更新它
@@ -31,6 +42,48 @@ update_env_var() {
     else
         # 变量不存在，添加它
         echo "${var_name}=${var_value}" >> .env
+    fi
+}
+
+# 安全更新环境变量（不覆盖现有重要配置）
+safe_update_env_var() {
+    local var_name=$1
+    local var_value=$2
+    local force=${3:-false}
+
+    # 确保 .env 文件存在
+    if [ ! -f .env ]; then
+        if [ -f .env.example ]; then
+            echo -e "${INFO} 从 .env.example 创建 .env 文件${NC}"
+            cp .env.example .env
+        else
+            echo -e "${INFO} 创建新的 .env 文件${NC}"
+            touch .env
+        fi
+    fi
+
+    # 检查是否已有配置
+    if grep -q "^${var_name}=" .env && [ "$force" != "true" ]; then
+        local current_value=$(grep "^${var_name}=" .env | cut -d'=' -f2-)
+        echo -e "${YELLOW}⚠️ 检测到现有 ${var_name} 配置: ${current_value}${NC}"
+        echo -e "${YELLOW}是否覆盖？ (y/n, 默认: n)${NC}"
+        read -p "> " overwrite
+
+        if [ "$overwrite" = "y" ] || [ "$overwrite" = "Y" ]; then
+            sed -i "s|^${var_name}=.*|${var_name}=${var_value}|" .env
+            echo -e "${GREEN}✅ 已更新 ${var_name} 配置${NC}"
+        else
+            echo -e "${INFO} 保持现有 ${var_name} 配置${NC}"
+            return 0
+        fi
+    else
+        # 更新或添加配置
+        if grep -q "^${var_name}=" .env; then
+            sed -i "s|^${var_name}=.*|${var_name}=${var_value}|" .env
+        else
+            echo "${var_name}=${var_value}" >> .env
+        fi
+        echo -e "${GREEN}✅ 已设置 ${var_name} 配置${NC}"
     fi
 }
 
@@ -703,8 +756,19 @@ configure_single_endpoint() {
 configure_multi_endpoints_interactive() {
     echo -e "${CYAN}🌐 多端点负载均衡配置${NC}"
 
+    # 确保 .env 文件存在
+    if [ ! -f .env ]; then
+        if [ -f .env.example ]; then
+            echo -e "${INFO} 从 .env.example 创建 .env 文件${NC}"
+            cp .env.example .env
+        else
+            echo -e "${INFO} 创建新的 .env 文件${NC}"
+            touch .env
+        fi
+    fi
+
     # 检查是否已有配置
-    if [ -f .env ] && grep -q "^DEEPINFRA_MIRRORS=" .env; then
+    if grep -q "^DEEPINFRA_MIRRORS=" .env; then
         local current_config=$(grep "^DEEPINFRA_MIRRORS=" .env | head -1)
         echo -e "${INFO} 当前配置: $current_config"
         echo -e "${YELLOW}是否使用现有配置？ (y/n, 默认: y)${NC}"
@@ -726,7 +790,7 @@ configure_multi_endpoints_interactive() {
     if [ -z "$user_endpoints" ]; then
         # 用户未输入，使用单端点
         echo -e "${INFO} 使用默认单端点配置${NC}"
-        update_env_var "DEEPINFRA_MIRRORS" "https://api.deepinfra.com/v1/openai/chat/completions"
+        safe_update_env_var "DEEPINFRA_MIRRORS" "https://api.deepinfra.com/v1/openai/chat/completions" "true"
     else
         # 转换用户输入为完整URL
         local mirrors=""
@@ -742,7 +806,7 @@ configure_multi_endpoints_interactive() {
             fi
         done
 
-        update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
+        safe_update_env_var "DEEPINFRA_MIRRORS" "$mirrors" "true"
 
         # 显示配置结果
         local endpoint_count=$(echo "$mirrors" | tr ',' '\n' | wc -l)
