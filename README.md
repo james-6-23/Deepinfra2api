@@ -47,6 +47,284 @@ Deepinfra2api/
 
 ## 🚀 快速开始
 
+### 使用统一启动脚本（推荐）
+
+```bash
+# 克隆项目
+git clone https://github.com/your-repo/deepinfra2api.git
+cd deepinfra2api
+
+# 运行启动脚本
+./quick-start.sh
+```
+
+## 📋 部署选项
+
+启动脚本提供以下部署选项：
+
+### 📦 Deno 版本部署 (端口 8000) - 推荐用于开发
+1. Deno 基础版
+2. Deno + 多端点负载均衡
+3. Deno + WARP 代理
+4. Deno + 多端点 + WARP 代理
+
+### 🐹 Go 版本部署 (端口 8001) - 推荐用于生产
+5. Go 基础版
+6. Go + 多端点负载均衡
+7. Go + WARP 代理
+8. Go + 多端点 + WARP 代理
+
+### 🚀 Go 高并发版本 (端口 8001) - 企业级高性能
+9. Go 高并发基础版 (1000并发)
+10. Go 高并发 + 多端点 (2000并发)
+11. Go 高并发 + WARP (1000并发)
+12. Go 高并发完整版 (3000并发)
+
+### 🔄 双版本部署
+13. 双版本基础部署
+14. 双版本 + 多端点负载均衡
+15. 双版本 + WARP 代理
+16. 双版本 + 多端点 + WARP 代理
+
+### 🛠️ 管理操作
+17. 测试部署
+18. 查看服务状态
+19. 停止所有服务
+
+## ⚡ 高并发版本特性
+
+Go 高并发版本提供企业级性能：
+
+| 版本 | 并发连接数 | 内存需求 | 适用场景 |
+|------|-----------|----------|----------|
+| 基础版 (选项9) | 1000 | 2GB | 中小型应用 |
+| 多端点版 (选项10) | 2000 | 4GB | 中大型应用 |
+| WARP版 (选项11) | 1000 | 2GB | 网络受限环境 |
+| 完整版 (选项12) | 3000 | 6GB | 企业级应用 |
+
+### 高并发版本功能
+- 🔒 **并发控制**：智能连接数限制，防止系统过载
+- 📊 **实时监控**：`/status` 端点提供系统状态监控
+- 💾 **内存管理**：智能内存使用监控和限制
+- 🛡️ **降级机制**：过载时优雅处理请求
+
+## 🌐 WARP 代理验证
+
+部署 WARP 代理版本后，使用以下方法验证：
+
+### 自动验证
+```bash
+# 运行 WARP 代理验证脚本
+./verify-warp-proxy.sh
+```
+
+### 手动验证
+```bash
+# 1. 检查 WARP 容器状态
+docker ps | grep deepinfra-warp
+
+# 2. 验证 WARP 代理功能
+docker exec deepinfra-warp curl -s --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
+
+# 3. 检查 IP 地址变化
+echo "服务器IP: $(curl -s ifconfig.me)"
+echo "WARP IP: $(docker exec deepinfra-warp curl -s --proxy socks5://localhost:1080 ifconfig.me)"
+
+# 4. 测试 API 访问
+curl -H "Authorization: Bearer linux.do" http://localhost:8001/v1/models
+```
+
+## 🔧 故障排除
+
+### 常见问题
+
+#### 1. WARP 代理部署失败
+**问题**：Docker 构建时出现网络连接错误
+```
+failed to fetch anonymous token: proxyconnect tcp: dial tcp: lookup deepinfra-warp
+```
+
+**解决方案**：
+- 脚本已自动修复此问题，采用分阶段部署策略
+- 如仍有问题，选择非 WARP 版本（选项 5、6、10）
+
+#### 2. 外部访问失败
+**问题**：从外网无法访问云服务器上的服务
+
+**解决方案**：
+```bash
+# 检查防火墙设置
+sudo ufw allow 8001/tcp  # Go 版本
+sudo ufw allow 8000/tcp  # Deno 版本
+
+# 检查云服务商安全组设置
+# 确保开放相应端口的入站规则
+```
+
+#### 3. 高并发版本性能问题
+**问题**：高并发版本响应缓慢或连接被拒绝
+
+**解决方案**：
+```bash
+# 检查系统状态
+curl http://localhost:8001/status
+
+# 调整并发配置（在 .env 文件中）
+MAX_CONCURRENT_CONNECTIONS=2000
+MEMORY_LIMIT_MB=4096
+
+# 重启服务
+docker compose restart deepinfra-proxy-go
+```
+
+#### 4. 流式响应截断
+**问题**：长响应被提前截断
+
+**解决方案**：
+- 已在 Go 版本中修复超时机制
+- 使用高并发版本获得更好的流式响应处理
+
+### 日志查看
+```bash
+# 查看服务状态
+docker compose ps
+
+# 查看应用日志
+docker compose logs -f deepinfra-proxy-go
+docker compose logs -f deepinfra-proxy-deno
+
+# 查看 WARP 代理日志
+docker compose logs -f deepinfra-warp
+```
+
+## 📖 API 使用示例
+
+### 获取模型列表
+```bash
+curl -H "Authorization: Bearer linux.do" \
+     http://localhost:8001/v1/models
+```
+
+### 聊天完成（非流式）
+```bash
+curl -X POST http://localhost:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V3.1",
+    "messages": [
+      {"role": "user", "content": "Hello, how are you?"}
+    ],
+    "max_tokens": 100
+  }'
+```
+
+### 聊天完成（流式）
+```bash
+curl -X POST http://localhost:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer linux.do" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V3.1",
+    "messages": [
+      {"role": "user", "content": "Write a short story"}
+    ],
+    "stream": true,
+    "max_tokens": 500
+  }'
+```
+
+### 高并发版本状态监控
+```bash
+# 查看系统状态
+curl http://localhost:8001/status
+
+# 返回示例
+{
+  "current_connections": 245,
+  "max_connections": 1000,
+  "memory_usage_mb": 156,
+  "memory_limit_mb": 2048,
+  "total_requests": 12450,
+  "error_count": 23
+}
+```
+
+## ⚙️ 配置说明
+
+### 环境变量配置
+
+主要配置项（在 `.env` 文件中）：
+
+```bash
+# 基础配置
+PORT=8001                           # 服务端口
+VALID_API_KEYS=linux.do            # API 密钥
+
+# 性能配置
+PERFORMANCE_MODE=balanced           # fast/balanced/secure
+MAX_RETRIES=3                      # 最大重试次数
+REQUEST_TIMEOUT=120000             # 请求超时（毫秒）
+
+# 高并发配置（高并发版本）
+MAX_CONCURRENT_CONNECTIONS=1000    # 最大并发连接数
+STREAM_TIMEOUT=300000              # 流式响应超时
+MEMORY_LIMIT_MB=2048               # 内存限制
+
+# WARP 代理配置
+HTTP_PROXY=http://deepinfra-warp:1080
+HTTPS_PROXY=http://deepinfra-warp:1080
+
+# 多端点配置
+DEEPINFRA_MIRRORS=https://api.deepinfra.com/v1/openai/chat/completions,https://api1.deepinfra.com/v1/openai/chat/completions
+```
+
+### 性能模式说明
+
+| 模式 | 重试次数 | 超时时间 | 随机延迟 | 适用场景 |
+|------|----------|----------|----------|----------|
+| fast | 1 | 10秒 | 0-100ms | 快速响应 |
+| balanced | 3 | 2分钟 | 100-500ms | 平衡性能 |
+| secure | 5 | 1分钟 | 500-1500ms | 高可靠性 |
+
+## 🤝 贡献指南
+
+欢迎提交 Issue 和 Pull Request！
+
+### 开发环境设置
+```bash
+# 克隆项目
+git clone https://github.com/your-repo/deepinfra2api.git
+cd deepinfra2api
+
+# 开发模式启动
+./quick-start.sh
+# 选择相应的开发版本
+```
+
+### 提交规范
+- 🐛 修复 bug
+- ✨ 新功能
+- 📚 文档更新
+- 🔧 配置修改
+- ⚡ 性能优化
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+
+## ⚠️ 免责声明
+
+本项目仅供学习和研究使用。使用者需要：
+- 遵守当地法律法规
+- 遵守相关服务提供商的使用条款
+- 自行承担使用风险
+- 获得必要的商业使用授权
+
+---
+
+**🌟 如果这个项目对您有帮助，请给个 Star！**
+
 ### 方式一：快速启动脚本（推荐）
 
 最简单的部署方式，提供交互式菜单和自动化配置：
