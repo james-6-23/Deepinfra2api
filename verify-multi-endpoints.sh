@@ -49,14 +49,15 @@ echo -e "${BLUE}==================== 1. 多端点配置检查 ==================
 echo -e "${CYAN}${CHART} 环境配置检查${NC}"
 if [ -f .env ]; then
     echo "当前 .env 配置:"
-    if grep -q "DEEPINFRA_MIRRORS=" .env; then
-        MIRRORS_CONFIG=$(grep "DEEPINFRA_MIRRORS=" .env | head -1)
+    # 只查找未注释的配置行
+    if grep -q "^DEEPINFRA_MIRRORS=" .env; then
+        MIRRORS_CONFIG=$(grep "^DEEPINFRA_MIRRORS=" .env | head -1)
         echo "$MIRRORS_CONFIG"
-        
+
         # 解析端点数量
         ENDPOINTS_COUNT=$(echo "$MIRRORS_CONFIG" | grep -o "https://[^,]*" | wc -l)
         echo -e "${INFO} 配置的端点数量: $ENDPOINTS_COUNT"
-        
+
         if [ $ENDPOINTS_COUNT -gt 1 ]; then
             echo -e "${SUCCESS} 多端点配置已启用"
             MULTI_ENDPOINT_ENABLED=true
@@ -65,7 +66,14 @@ if [ -f .env ]; then
             MULTI_ENDPOINT_ENABLED=false
         fi
     else
-        echo -e "${WARNING} 未找到 DEEPINFRA_MIRRORS 配置，使用默认单端点"
+        # 检查是否有被注释的配置
+        if grep -q "^#.*DEEPINFRA_MIRRORS=" .env; then
+            COMMENTED_CONFIG=$(grep "^#.*DEEPINFRA_MIRRORS=" .env | head -1)
+            echo -e "${WARNING} 发现被注释的配置: $COMMENTED_CONFIG"
+            echo -e "${WARNING} 多端点配置被注释，当前使用默认单端点"
+        else
+            echo -e "${WARNING} 未找到 DEEPINFRA_MIRRORS 配置"
+        fi
         MULTI_ENDPOINT_ENABLED=false
     fi
 else
@@ -89,13 +97,25 @@ DEFAULT_ENDPOINTS=(
     "https://api2.deepinfra.com/v1/openai/chat/completions"
 )
 
-# 获取配置的端点
-if [ "$MULTI_ENDPOINT_ENABLED" = true ]; then
-    # 从配置中提取端点
-    ENDPOINTS=($(echo "$MIRRORS_CONFIG" | sed 's/DEEPINFRA_MIRRORS=//' | tr ',' '\n'))
+# 获取实际使用的端点配置（优先从容器获取）
+ACTUAL_MIRRORS=""
+if docker exec $APP_CONTAINER env | grep -q "^DEEPINFRA_MIRRORS="; then
+    ACTUAL_MIRRORS=$(docker exec $APP_CONTAINER env | grep "^DEEPINFRA_MIRRORS=" | cut -d'=' -f2-)
+    echo -e "${INFO} 从容器获取实际配置: $ACTUAL_MIRRORS"
+elif [ "$MULTI_ENDPOINT_ENABLED" = true ]; then
+    ACTUAL_MIRRORS=$(echo "$MIRRORS_CONFIG" | sed 's/DEEPINFRA_MIRRORS=//')
+    echo -e "${INFO} 从 .env 文件获取配置: $ACTUAL_MIRRORS"
+fi
+
+# 获取要测试的端点
+if [ -n "$ACTUAL_MIRRORS" ]; then
+    # 从实际配置中提取端点
+    ENDPOINTS=($(echo "$ACTUAL_MIRRORS" | tr ',' '\n'))
+    echo -e "${INFO} 将测试 ${#ENDPOINTS[@]} 个实际配置的端点"
 else
     # 使用默认端点进行测试
     ENDPOINTS=("${DEFAULT_ENDPOINTS[@]}")
+    echo -e "${INFO} 使用默认端点进行测试"
 fi
 
 echo -e "${CYAN}${TEST} 测试各端点连通性${NC}"
