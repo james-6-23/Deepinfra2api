@@ -527,30 +527,80 @@ deploy_service() {
     local actual_deno_port=${current_ports[0]}
     local actual_go_port=${current_ports[1]}
 
-    # 先启动服务（不包含 WARP 代理配置）
+    # 智能 WARP 部署策略
     if [[ "$profiles" == *"warp"* ]]; then
-        # 对于 WARP 部署，先启动 WARP 服务
-        echo -e "${CYAN}🔧 正在启动 WARP 代理服务...${NC}"
-        if docker compose --profile warp up -d --build; then
+        echo -e "${CYAN}🔧 WARP 部署模式：分阶段启动${NC}"
+
+        # 阶段1：确保代理配置被禁用，先构建应用镜像
+        echo -e "${BLUE}阶段1: 禁用代理配置并构建应用镜像${NC}"
+        configure_warp_proxy "false"
+
+        # 提取非 warp 的 profiles 用于构建
+        local app_profiles=""
+        if [[ "$profiles" == *"deno"* ]]; then
+            app_profiles="$app_profiles --profile deno"
+        fi
+        if [[ "$profiles" == *"go"* ]]; then
+            app_profiles="$app_profiles --profile go"
+        fi
+
+        # 先构建应用镜像（不启动）
+        echo -e "${CYAN}🔨 构建应用镜像...${NC}"
+        if docker compose $app_profiles build; then
+            echo -e "${GREEN}✅ 应用镜像构建成功${NC}"
+        else
+            echo -e "${RED}❌ 应用镜像构建失败${NC}"
+            return 1
+        fi
+
+        # 阶段2：启动 WARP 代理服务
+        echo -e "${BLUE}阶段2: 启动 WARP 代理服务${NC}"
+        if docker compose --profile warp up -d; then
             echo -e "${GREEN}✅ WARP 代理服务启动成功${NC}"
-            echo -e "${YELLOW}⏳ 等待 WARP 代理初始化 (30秒)...${NC}"
-            sleep 30
-
-            # 配置 WARP 代理环境变量
-            configure_warp_proxy "true"
-
-            # 启动其他服务
-            echo -e "${CYAN}🔧 正在启动应用服务...${NC}"
-            if docker compose $profiles up -d --build; then
-                echo -e "${GREEN}✅ 所有服务启动成功${NC}"
-            else
-                echo -e "${RED}❌ 应用服务启动失败${NC}"
-                return 1
-            fi
+            echo -e "${YELLOW}⏳ 等待 WARP 代理完全初始化 (45秒)...${NC}"
+            sleep 45
         else
             echo -e "${RED}❌ WARP 代理服务启动失败${NC}"
             return 1
         fi
+
+        # 阶段3：验证 WARP 代理可用性
+        echo -e "${BLUE}阶段3: 验证 WARP 代理连接${NC}"
+        local warp_ready=false
+        for i in {1..10}; do
+            if docker exec deepinfra-warp curl -s --connect-timeout 5 http://www.google.com > /dev/null 2>&1; then
+                echo -e "${GREEN}✅ WARP 代理连接验证成功${NC}"
+                warp_ready=true
+                break
+            else
+                echo -e "${YELLOW}⏳ WARP 代理连接验证中... ($i/10)${NC}"
+                sleep 5
+            fi
+        done
+
+        if [ "$warp_ready" = false ]; then
+            echo -e "${YELLOW}⚠️ WARP 代理连接验证超时，但继续部署${NC}"
+        fi
+
+        # 阶段4：配置代理环境变量并启动应用
+        echo -e "${BLUE}阶段4: 配置代理并启动应用服务${NC}"
+        configure_warp_proxy "true"
+
+        # 启动应用服务（使用已构建的镜像）
+        if docker compose $app_profiles up -d; then
+            echo -e "${GREEN}✅ 应用服务启动成功${NC}"
+        else
+            echo -e "${RED}❌ 应用服务启动失败${NC}"
+            echo -e "${BLUE}💡 尝试回退方案...${NC}"
+            # 回退：禁用代理重新启动
+            configure_warp_proxy "false"
+            if docker compose $app_profiles up -d; then
+                echo -e "${YELLOW}⚠️ 应用服务已启动，但未使用 WARP 代理${NC}"
+            else
+                return 1
+            fi
+        fi
+
     else
         # 非 WARP 部署，直接启动
         configure_warp_proxy "false"
