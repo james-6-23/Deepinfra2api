@@ -20,7 +20,7 @@ show_title() {
     echo ""
 }
 
-# 更新环境变量函数（保护现有配置）
+# 智能环境变量更新函数
 update_env_var() {
     local var_name=$1
     local var_value=$2
@@ -36,12 +36,88 @@ update_env_var() {
         fi
     fi
 
-    if grep -q "^${var_name}=" .env; then
-        # 变量存在，更新它
-        sed -i "s|^${var_name}=.*|${var_name}=${var_value}|" .env
+    # 删除所有相同变量名的行（包括注释和空值）
+    sed -i "/^#\?${var_name}=/d" .env
+
+    # 在合适的位置插入新配置
+    if [ "$var_name" = "DEEPINFRA_MIRRORS" ]; then
+        # 在多端点配置注释后插入
+        if grep -q "# 多端点配置" .env; then
+            sed -i "/# 多端点配置/a\\${var_name}=${var_value}" .env
+        else
+            # 在 API Key 配置后插入
+            if grep -q "VALID_API_KEYS" .env; then
+                sed -i "/VALID_API_KEYS/a\\\\n# 多端点配置\\n${var_name}=${var_value}" .env
+            else
+                echo -e "\n# 多端点配置\n${var_name}=${var_value}" >> .env
+            fi
+        fi
+    elif [ "$var_name" = "HTTP_PROXY" ] || [ "$var_name" = "HTTPS_PROXY" ]; then
+        # 在代理配置区域插入
+        if grep -q "# 代理配置" .env; then
+            sed -i "/# 代理配置/a\\${var_name}=${var_value}" .env
+        else
+            echo -e "\n# 代理配置\n${var_name}=${var_value}" >> .env
+        fi
     else
-        # 变量不存在，添加它
+        # 其他配置直接添加到末尾
         echo "${var_name}=${var_value}" >> .env
+    fi
+}
+
+# 检查和清理配置文件
+check_and_clean_config() {
+    if [ ! -f .env ]; then
+        return 0
+    fi
+
+    echo -e "${CYAN}🔍 检查配置文件完整性...${NC}"
+
+    # 检查重复配置
+    local duplicates=$(grep -E "^[A-Z_]+=.*" .env | cut -d'=' -f1 | sort | uniq -d)
+    if [ -n "$duplicates" ]; then
+        echo -e "${YELLOW}⚠️ 发现重复配置项，正在清理...${NC}"
+        for dup in $duplicates; do
+            echo "  清理重复的 $dup 配置"
+            # 保留最后一个有效配置
+            local last_value=$(grep "^${dup}=" .env | tail -1 | cut -d'=' -f2-)
+            sed -i "/^${dup}=/d" .env
+            if [ -n "$last_value" ]; then
+                update_env_var "$dup" "$last_value"
+            fi
+        done
+    fi
+
+    # 检查空值配置
+    local empty_configs=$(grep -E "^[A-Z_]+=$" .env | cut -d'=' -f1)
+    if [ -n "$empty_configs" ]; then
+        echo -e "${YELLOW}⚠️ 发现空值配置项：${NC}"
+        for empty in $empty_configs; do
+            echo "  - $empty (空值)"
+        done
+    fi
+
+    echo -e "${GREEN}✅ 配置文件检查完成${NC}"
+}
+
+# 智能 WARP 配置管理
+manage_warp_config() {
+    local enable_warp=$1
+    local has_multi_endpoint=$2
+
+    if [ "$enable_warp" = "true" ]; then
+        echo -e "${CYAN}🔧 启用 WARP 代理配置...${NC}"
+        update_env_var "WARP_ENABLED" "true"
+        update_env_var "HTTP_PROXY" "http://deepinfra-warp:1080"
+        update_env_var "HTTPS_PROXY" "http://deepinfra-warp:1080"
+        echo -e "${GREEN}✅ WARP 代理已启用${NC}"
+    else
+        echo -e "${CYAN}🔧 禁用 WARP 代理配置...${NC}"
+        update_env_var "WARP_ENABLED" "false"
+        # 注释掉代理配置而不是删除
+        sed -i 's/^HTTP_PROXY=/#HTTP_PROXY=/' .env
+        sed -i 's/^HTTPS_PROXY=/#HTTPS_PROXY=/' .env
+        echo -e "${GREEN}✅ WARP 代理已禁用${NC}"
     fi
 }
 
@@ -752,37 +828,40 @@ configure_single_endpoint() {
     echo -e "${GREEN}✅ 配置为单端点模式${NC}"
 }
 
-# 交互式多端点配置
+# 智能多端点配置
 configure_multi_endpoints_interactive() {
     echo -e "${CYAN}🌐 多端点负载均衡配置${NC}"
 
-    # 确保 .env 文件存在
-    if [ ! -f .env ]; then
-        if [ -f .env.example ]; then
-            echo -e "${INFO} 从 .env.example 创建 .env 文件${NC}"
-            cp .env.example .env
-        else
-            echo -e "${INFO} 创建新的 .env 文件${NC}"
-            touch .env
-        fi
-    fi
+    # 清理和检查配置文件
+    check_and_clean_config
 
-    # 检查是否已有配置
+    # 检查现有配置
+    local current_mirrors=""
     if grep -q "^DEEPINFRA_MIRRORS=" .env; then
-        local current_config=$(grep "^DEEPINFRA_MIRRORS=" .env | head -1)
-        echo -e "${INFO} 当前配置: $current_config"
-        echo -e "${YELLOW}是否使用现有配置？ (y/n, 默认: y)${NC}"
-        read -p "> " use_existing
+        current_mirrors=$(grep "^DEEPINFRA_MIRRORS=" .env | tail -1 | cut -d'=' -f2-)
+        if [ -n "$current_mirrors" ]; then
+            echo -e "${INFO} 检测到现有多端点配置${NC}"
+            local endpoint_count=$(echo "$current_mirrors" | tr ',' '\n' | wc -l)
+            echo -e "${INFO} 当前配置 $endpoint_count 个端点:"
+            echo "$current_mirrors" | tr ',' '\n' | sed 's/^/  - /' | sed 's|/v1/openai/chat/completions||'
+            echo ""
+            echo -e "${YELLOW}是否保留现有配置？ (y/n, 默认: y)${NC}"
+            read -p "> " keep_existing
 
-        if [ "$use_existing" != "n" ] && [ "$use_existing" != "N" ]; then
-            echo -e "${GREEN}✅ 使用现有多端点配置${NC}"
-            return 0
+            if [ "$keep_existing" != "n" ] && [ "$keep_existing" != "N" ]; then
+                echo -e "${GREEN}✅ 保留现有多端点配置${NC}"
+
+                # 检查是否需要配置 WARP
+                check_warp_config_for_multi_endpoint
+                return 0
+            fi
         fi
     fi
 
     echo ""
     echo -e "${BLUE}请输入 DeepInfra 端点域名（用逗号分隔）${NC}"
-    echo -e "${CYAN}示例: api.deepinfra.com,api1.deepinfra.com,api2.deepinfra.com${NC}"
+    echo -e "${CYAN}示例1: api.deepinfra.com,api1.deepinfra.com,api2.deepinfra.com${NC}"
+    echo -e "${CYAN}示例2: api.deepinfra.com,your-worker1.workers.dev,your-worker2.workers.dev${NC}"
     echo -e "${YELLOW}留空则使用默认单端点 (api.deepinfra.com)${NC}"
     echo -n "> "
     read -r user_endpoints
@@ -790,7 +869,10 @@ configure_multi_endpoints_interactive() {
     if [ -z "$user_endpoints" ]; then
         # 用户未输入，使用单端点
         echo -e "${INFO} 使用默认单端点配置${NC}"
-        safe_update_env_var "DEEPINFRA_MIRRORS" "https://api.deepinfra.com/v1/openai/chat/completions" "true"
+        update_env_var "DEEPINFRA_MIRRORS" "https://api.deepinfra.com/v1/openai/chat/completions"
+
+        # 单端点不需要 WARP，询问是否禁用
+        ask_disable_warp_for_single_endpoint
     else
         # 转换用户输入为完整URL
         local mirrors=""
@@ -806,13 +888,50 @@ configure_multi_endpoints_interactive() {
             fi
         done
 
-        safe_update_env_var "DEEPINFRA_MIRRORS" "$mirrors" "true"
+        update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
 
         # 显示配置结果
         local endpoint_count=$(echo "$mirrors" | tr ',' '\n' | wc -l)
         echo -e "${GREEN}✅ 配置了 $endpoint_count 个端点的负载均衡${NC}"
         echo -e "${INFO} 端点列表:"
         echo "$mirrors" | tr ',' '\n' | sed 's/^/  - /'
+
+        # 多端点配置，检查 WARP 配置
+        check_warp_config_for_multi_endpoint
+    fi
+}
+
+# 检查多端点配置的 WARP 设置
+check_warp_config_for_multi_endpoint() {
+    echo ""
+    echo -e "${CYAN}🔍 检查 WARP 代理配置...${NC}"
+
+    if grep -q "^HTTP_PROXY=.*deepinfra-warp" .env; then
+        echo -e "${INFO} 检测到 WARP 代理配置已启用${NC}"
+    else
+        echo -e "${YELLOW}多端点配置建议启用 WARP 代理以提高稳定性${NC}"
+        echo -e "${YELLOW}是否启用 WARP 代理？ (y/n, 默认: y)${NC}"
+        read -p "> " enable_warp
+
+        if [ "$enable_warp" != "n" ] && [ "$enable_warp" != "N" ]; then
+            manage_warp_config "true" "true"
+        else
+            manage_warp_config "false" "true"
+        fi
+    fi
+}
+
+# 询问是否为单端点禁用 WARP
+ask_disable_warp_for_single_endpoint() {
+    if grep -q "^HTTP_PROXY=.*deepinfra-warp" .env; then
+        echo ""
+        echo -e "${YELLOW}检测到 WARP 代理配置，单端点模式通常不需要 WARP${NC}"
+        echo -e "${YELLOW}是否禁用 WARP 代理？ (y/n, 默认: n)${NC}"
+        read -p "> " disable_warp
+
+        if [ "$disable_warp" = "y" ] || [ "$disable_warp" = "Y" ]; then
+            manage_warp_config "false" "false"
+        fi
     fi
 }
 
