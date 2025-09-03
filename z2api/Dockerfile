@@ -5,13 +5,13 @@ FROM golang:1.21-alpine AS builder
 # 设置工作目录
 WORKDIR /app
 
-# 安装构建依赖
-RUN apk add --no-cache git ca-certificates tzdata
+# 安装构建依赖（移除不必要的包）
+RUN apk add --no-cache ca-certificates tzdata
 
 # 复制 go.mod 和 go.sum（如果存在）
 COPY go.mod go.sum* ./
 
-# 下载依赖（如果有的话）
+# 下载依赖
 RUN go mod download
 
 # 复制源代码
@@ -25,8 +25,8 @@ ENV GOARCH=amd64
 # 构建应用程序
 RUN go build -a -installsuffix cgo -ldflags="-w -s" -o z2api main.go
 
-# 验证构建结果
-RUN ls -la /app/z2api && file /app/z2api
+# 验证构建结果（只使用 ls，不使用 file 命令）
+RUN ls -la /app/z2api
 
 # 第二阶段：运行时阶段
 FROM alpine:latest

@@ -1,10 +1,8 @@
 # Z2API Docker Compose 配置
-# 使用方法：
-# 1. 运行：docker compose up -d --build
-# 2. 停止：docker compose down
-# 3. 查看日志：docker compose logs -f
-
-version: '3.8'
+# 端口配置说明：
+# - "主机端口:容器端口" 格式
+# - 主机端口：外部访问的端口
+# - 容器端口：应用内部监听的端口（硬编码为 8080）
 
 services:
   z2api:
@@ -12,10 +10,26 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: z2api-service
+
+    # 端口配置方式（选择一种取消注释）
     ports:
-      - "8080:8080"  # 应用硬编码端口 8080
+      # 方式1：使用8081端口（避免8080冲突）
+      - "8081:8080"    # 访问地址：http://localhost:8081
+
+      # 方式2：使用9080端口
+      # - "9080:8080"  # 访问地址：http://localhost:9080
+
+      # 方式3：标准8080端口（如果没有冲突）
+      # - "8080:8080"  # 访问地址：http://localhost:8080
+
+      # 方式4：只允许本地访问（更安全）
+      # - "127.0.0.1:8081:8080"  # 只允许本地访问
+
+      # 方式5：Docker自动分配端口
+      # - "8080"       # 使用 docker compose ps 查看实际端口
+
     restart: unless-stopped
-    
+
     # 健康检查配置
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
@@ -23,7 +37,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    
+
     # 资源限制
     deploy:
       resources:
@@ -33,18 +47,22 @@ services:
         reservations:
           cpus: '0.5'
           memory: 256M
-    
+
     # 日志配置
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    
+
     # 网络配置
     networks:
       - z2api-network
-    
+
+    # 环境变量（如果需要的话）
+    environment:
+      - TZ=Asia/Shanghai
+
     # 标签
     labels:
       - "com.z2api.description=Z.AI API Proxy Service"
