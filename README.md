@@ -1,6 +1,6 @@
-# DeepInfra2API
+# DeepInfra2API - 用户自主配置版本
 
-一个高性能的 DeepInfra API 代理服务，提供 OpenAI 兼容接口，支持多端点负载均衡、故障转移和流式响应处理。
+一个高性能的 DeepInfra API 代理服务，支持多端点负载均衡、智能故障转移和 WARP 代理。本版本采用**用户自主配置模式**，每个服务版本独立部署和配置。
 
 > ⚠️ **重要免责声明**
 > 
@@ -25,58 +25,77 @@
 - **隐私保护**：默认不记录用户消息和响应内容，保护用户隐私
 - **容器化部署**：完整的 Docker Compose 配置，支持多 Profile 部署
 
-## 🏗️ 项目架构
+## 🏗️ 分布式配置架构
+
+### 架构设计
+- **Go 版本**：`go-version/` - 高性能 Go 实现
+- **Deno 版本**：`deno-version/` - 现代 TypeScript 实现
+- **独立配置**：每个版本都有独立的 `.env.example` 和 `docker-compose.yml`
+- **用户自主**：用户完全控制配置和部署流程
 
 ```
 Deepinfra2api/
-├── deno-version/           # Deno/TypeScript 版本
-│   ├── app.ts             # 主应用文件
-│   ├── deno.json          # Deno 配置
-│   ├── Dockerfile         # Deno 版本容器配置
-│   └── deploy.sh          # 独立部署脚本
-├── go-version/            # Go 版本
+├── go-version/             # Go 版本（生产推荐）
+│   ├── .env.example       # Go 版本配置模板
+│   ├── docker-compose.yml # Go 版本 Docker 配置
 │   ├── main.go            # 主应用文件
 │   ├── go.mod             # Go 模块配置
-│   ├── Dockerfile         # Go 版本容器配置
-│   └── deploy.sh          # 独立部署脚本
-├── docker-compose.yml     # 统一的 Docker Compose 配置
-├── .env.example           # 环境变量配置模板
-├── quick-start.sh         # 快速启动脚本
-└── warp-data/            # WARP 代理数据目录
+│   └── Dockerfile         # Go 版本容器配置
+├── deno-version/          # Deno 版本（开发推荐）
+│   ├── .env.example       # Deno 版本配置模板
+│   ├── docker-compose.yml # Deno 版本 Docker 配置
+│   ├── app.ts             # 主应用文件
+│   ├── deno.json          # Deno 配置
+│   └── Dockerfile         # Deno 版本容器配置
+├── verify-multi-endpoints.sh  # 多端点验证工具（可选）
+├── test-workers-endpoints.sh  # Workers 端点测试工具（可选）
+└── README.md              # 使用说明
 ```
 
 ## 🚀 快速开始
 
-### 使用统一启动脚本（推荐）
+### 选择服务版本
 
+#### Go 版本（推荐生产环境）
 ```bash
-# 克隆项目
-git clone https://github.com/your-repo/deepinfra2api.git
-cd deepinfra2api
-
-# 运行启动脚本
-./quick-start.sh
+cd go-version
+cp .env.example .env
+# 编辑 .env 文件配置您的参数
+docker compose up -d
 ```
 
-## 📋 部署选项
+#### Deno 版本（推荐开发环境）
+```bash
+cd deno-version
+cp .env.example .env
+# 编辑 .env 文件配置您的参数
+docker compose up -d
+```
 
-启动脚本提供以下部署选项：
+### 基础配置步骤
 
-### 📦 Deno 版本部署 (端口 8000) - 推荐用于开发
-1. Deno 基础版
-2. Deno + 多端点负载均衡
-3. Deno + WARP 代理
-4. Deno + 多端点 + WARP 代理
+1. **复制配置文件**
+   ```bash
+   cp .env.example .env
+   ```
 
-### 🐹 Go 版本部署 (端口 8001) - 推荐用于生产
-5. Go 基础版
-6. Go + 多端点负载均衡
-7. Go + WARP 代理
-8. Go + 多端点 + WARP 代理
+2. **编辑配置文件**
+   ```bash
+   nano .env
+   # 至少修改以下配置：
+   # VALID_API_KEYS=your-api-key
+   # PORT=8001  # 或其他端口
+   ```
 
-### 🚀 Go 高并发版本 (端口 8001) - 企业级高性能
-9. Go 高并发基础版 (1000并发)
-10. Go 高并发 + 多端点 (2000并发)
+3. **启动服务**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **验证服务**
+   ```bash
+   curl http://localhost:8001/health
+   ```
 11. Go 高并发 + WARP (1000并发)
 12. Go 高并发完整版 (3000并发)
 
