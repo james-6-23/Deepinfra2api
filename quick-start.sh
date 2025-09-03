@@ -503,9 +503,9 @@ deploy_service() {
     # 端口配置检查
     configure_ports "$deployment_type"
 
-    # 配置多端点（如果需要）
+    # 配置端点（交互式或预设）
     if [ "$endpoints" = "multi" ]; then
-        configure_multi_endpoints
+        configure_multi_endpoints_interactive
     elif [ "$endpoints" = "single" ]; then
         configure_single_endpoint
     fi
@@ -699,11 +699,62 @@ configure_single_endpoint() {
     echo -e "${GREEN}✅ 配置为单端点模式${NC}"
 }
 
-# 配置多端点
+# 交互式多端点配置
+configure_multi_endpoints_interactive() {
+    echo -e "${CYAN}🌐 多端点负载均衡配置${NC}"
+
+    # 检查是否已有配置
+    if [ -f .env ] && grep -q "^DEEPINFRA_MIRRORS=" .env; then
+        local current_config=$(grep "^DEEPINFRA_MIRRORS=" .env | head -1)
+        echo -e "${INFO} 当前配置: $current_config"
+        echo -e "${YELLOW}是否使用现有配置？ (y/n, 默认: y)${NC}"
+        read -p "> " use_existing
+
+        if [ "$use_existing" != "n" ] && [ "$use_existing" != "N" ]; then
+            echo -e "${GREEN}✅ 使用现有多端点配置${NC}"
+            return 0
+        fi
+    fi
+
+    echo ""
+    echo -e "${BLUE}请输入 DeepInfra 端点域名（用逗号分隔）${NC}"
+    echo -e "${CYAN}示例: api.deepinfra.com,api1.deepinfra.com,api2.deepinfra.com${NC}"
+    echo -e "${YELLOW}留空则使用默认单端点 (api.deepinfra.com)${NC}"
+    echo -n "> "
+    read -r user_endpoints
+
+    if [ -z "$user_endpoints" ]; then
+        # 用户未输入，使用单端点
+        echo -e "${INFO} 使用默认单端点配置${NC}"
+        update_env_var "DEEPINFRA_MIRRORS" "https://api.deepinfra.com/v1/openai/chat/completions"
+    else
+        # 转换用户输入为完整URL
+        local mirrors=""
+        IFS=',' read -ra DOMAINS <<< "$user_endpoints"
+        for domain in "${DOMAINS[@]}"; do
+            # 清理域名（去除空格和协议前缀）
+            domain=$(echo "$domain" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//' | sed 's|^https\?://||')
+
+            if [ -n "$mirrors" ]; then
+                mirrors="$mirrors,https://$domain/v1/openai/chat/completions"
+            else
+                mirrors="https://$domain/v1/openai/chat/completions"
+            fi
+        done
+
+        update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
+
+        # 显示配置结果
+        local endpoint_count=$(echo "$mirrors" | tr ',' '\n' | wc -l)
+        echo -e "${GREEN}✅ 配置了 $endpoint_count 个端点的负载均衡${NC}"
+        echo -e "${INFO} 端点列表:"
+        echo "$mirrors" | tr ',' '\n' | sed 's/^/  - /'
+    fi
+}
+
+# 配置多端点（兼容旧版本）
 configure_multi_endpoints() {
-    local mirrors="https://api.deepinfra.com/v1/openai/chat/completions,https://api1.deepinfra.com/v1/openai/chat/completions,https://api2.deepinfra.com/v1/openai/chat/completions"
-    update_env_var "DEEPINFRA_MIRRORS" "$mirrors"
-    echo -e "${GREEN}✅ 配置为多端点负载均衡模式${NC}"
+    configure_multi_endpoints_interactive
 }
 
 # 配置高并发基础版 (1000并发)
@@ -793,6 +844,70 @@ configure_warp_proxy() {
     fi
 }
 
+# 强制停止所有相关容器
+force_stop_containers() {
+    echo -e "${BLUE}🛑 强制停止所有相关容器...${NC}"
+
+    # 获取所有相关容器ID
+    local containers=$(docker ps -a --filter "name=deepinfra" --format "{{.ID}}")
+
+    if [ -n "$containers" ]; then
+        echo "发现相关容器，正在停止..."
+        echo "$containers" | xargs docker stop >/dev/null 2>&1 || true
+        echo "正在删除容器..."
+        echo "$containers" | xargs docker rm >/dev/null 2>&1 || true
+        echo -e "${GREEN}✅ 容器清理完成${NC}"
+    else
+        echo -e "${INFO} 未发现运行中的相关容器${NC}"
+    fi
+
+    # 清理网络
+    docker network prune -f >/dev/null 2>&1 || true
+}
+
+# 检测当前运行的服务配置
+detect_current_services() {
+    local detected_profiles=""
+
+    # 检查 .env 文件配置
+    if [ -f .env ]; then
+        echo -e "${BLUE}📋 读取 .env 配置文件...${NC}"
+
+        # 检查 WARP 代理配置
+        if grep -q "^HTTP_PROXY=http://deepinfra-warp:1080" .env; then
+            detected_profiles="$detected_profiles --profile warp"
+            echo -e "${INFO} 检测到 WARP 代理配置"
+        fi
+
+        # 检查多端点配置
+        if grep -q "^DEEPINFRA_MIRRORS=" .env; then
+            local mirrors_config=$(grep "^DEEPINFRA_MIRRORS=" .env | head -1)
+            local endpoint_count=$(echo "$mirrors_config" | grep -o "https://[^,]*" | wc -l)
+            if [ $endpoint_count -gt 1 ]; then
+                echo -e "${INFO} 检测到多端点配置 ($endpoint_count 个端点)"
+            else
+                echo -e "${INFO} 检测到单端点配置"
+            fi
+        fi
+
+        # 检查高并发配置
+        if grep -q "^MAX_CONCURRENT_CONNECTIONS=" .env; then
+            local max_conn=$(grep "^MAX_CONCURRENT_CONNECTIONS=" .env | cut -d'=' -f2)
+            echo -e "${INFO} 检测到高并发配置 (最大连接数: $max_conn)"
+        fi
+
+        # 默认启动 Go 和 Deno 服务
+        detected_profiles="$detected_profiles --profile deno --profile go"
+        echo -e "${INFO} 将启动 Deno 和 Go 服务"
+
+    else
+        echo -e "${YELLOW}⚠️ 未找到 .env 文件，使用默认配置${NC}"
+        detected_profiles="--profile deno --profile go"
+    fi
+
+    echo "$detected_profiles"
+}
+
 # 重启所有服务
 restart_all_services() {
     echo -e "${CYAN}🔄 重启服务流程开始...${NC}"
@@ -803,106 +918,132 @@ restart_all_services() {
 
     echo ""
     echo -e "${BLUE}🛑 停止所有服务...${NC}"
-    if docker compose down; then
-        echo -e "${GREEN}✅ 服务停止成功${NC}"
+
+    # 尝试优雅停止
+    if ! docker compose down --timeout 30; then
+        echo -e "${YELLOW}⚠️ 优雅停止失败，尝试强制停止...${NC}"
+        force_stop_containers
     else
-        echo -e "${RED}❌ 服务停止失败${NC}"
-        return 1
+        echo -e "${GREEN}✅ 服务停止成功${NC}"
     fi
 
     echo ""
-    echo -e "${BLUE}⏳ 等待服务完全停止 (3秒)...${NC}"
-    sleep 3
+    echo -e "${BLUE}⏳ 等待服务完全停止 (5秒)...${NC}"
+    sleep 5
+
+    # 检测要启动的服务配置
+    local restart_profiles=$(detect_current_services)
 
     echo ""
+    echo -e "${CYAN}🔧 启动配置: $restart_profiles${NC}"
     echo -e "${BLUE}🚀 重新启动服务...${NC}"
 
-    # 检测之前运行的服务类型
-    local restart_profiles=""
-
-    # 检查 .env 文件中的配置来确定要启动的服务
-    if [ -f .env ]; then
-        if grep -q "HTTP_PROXY=http://deepinfra-warp:1080" .env; then
-            restart_profiles="$restart_profiles --profile warp"
-            echo -e "${INFO} 检测到 WARP 代理配置"
+    # 分阶段启动（如果包含 WARP）
+    if [[ "$restart_profiles" == *"warp"* ]]; then
+        echo -e "${BLUE}阶段1: 启动 WARP 代理服务${NC}"
+        if docker compose --profile warp up -d; then
+            echo -e "${GREEN}✅ WARP 代理服务启动成功${NC}"
+            echo -e "${YELLOW}⏳ 等待 WARP 代理初始化 (30秒)...${NC}"
+            sleep 30
+        else
+            echo -e "${RED}❌ WARP 代理服务启动失败${NC}"
+            return 1
         fi
 
-        # 默认启动 Go 和 Deno 服务
-        restart_profiles="$restart_profiles --profile deno --profile go"
-        echo -e "${INFO} 将启动 Deno 和 Go 服务"
+        echo -e "${BLUE}阶段2: 启动应用服务${NC}"
+        if docker compose --profile deno --profile go up -d --build; then
+            echo -e "${GREEN}✅ 应用服务启动成功${NC}"
+        else
+            echo -e "${RED}❌ 应用服务启动失败${NC}"
+            return 1
+        fi
     else
-        echo -e "${YELLOW}⚠️ 未找到 .env 文件，使用默认配置${NC}"
-        restart_profiles="--profile deno --profile go"
+        # 非 WARP 部署，直接启动
+        if docker compose $restart_profiles up -d --build; then
+            echo -e "${GREEN}✅ 服务启动成功${NC}"
+        else
+            echo -e "${RED}❌ 服务启动失败${NC}"
+            return 1
+        fi
     fi
 
-    echo -e "${CYAN}🔧 启动配置: $restart_profiles${NC}"
+    echo ""
+    echo -e "${CYAN}⏳ 等待服务完全初始化 (15秒)...${NC}"
+    sleep 15
 
-    if docker compose $restart_profiles up -d --build; then
-        echo -e "${GREEN}✅ 服务重启成功${NC}"
+    echo ""
+    echo -e "${BLUE}🧪 验证服务状态...${NC}"
+    docker compose ps
 
-        echo ""
-        echo -e "${CYAN}⏳ 等待服务初始化 (10秒)...${NC}"
-        sleep 10
+    # 详细的健康检查
+    echo ""
+    local health_check_passed=true
+    local current_ports=($(get_current_ports))
+    local actual_deno_port=${current_ports[0]}
+    local actual_go_port=${current_ports[1]}
 
-        echo ""
-        echo -e "${BLUE}🧪 验证服务状态...${NC}"
-        docker compose ps
+    echo -e "${BLUE}健康检查结果:${NC}"
 
-        # 简单的健康检查
-        echo ""
-        local health_check_passed=true
-
-        if curl -s --connect-timeout 5 http://localhost:8000/health >/dev/null 2>&1; then
-            echo -e "${GREEN}✅ Deno 服务健康检查通过${NC}"
-        else
-            echo -e "${YELLOW}⚠️ Deno 服务健康检查失败${NC}"
-            health_check_passed=false
-        fi
-
-        if curl -s --connect-timeout 5 http://localhost:8001/health >/dev/null 2>&1; then
-            echo -e "${GREEN}✅ Go 服务健康检查通过${NC}"
-        else
-            echo -e "${YELLOW}⚠️ Go 服务健康检查失败${NC}"
-            health_check_passed=false
-        fi
-
-        if [[ "$restart_profiles" == *"warp"* ]]; then
-            if docker exec deepinfra-warp curl -s --connect-timeout 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
-                echo -e "${GREEN}✅ WARP 代理验证通过${NC}"
-            else
-                echo -e "${YELLOW}⚠️ WARP 代理验证失败${NC}"
-                health_check_passed=false
-            fi
-        fi
-
-        echo ""
-        if [ "$health_check_passed" = true ]; then
-            echo -e "${GREEN}🎉 服务重启完成，所有服务运行正常！${NC}"
-        else
-            echo -e "${YELLOW}⚠️ 服务重启完成，但部分服务可能需要更多时间初始化${NC}"
-        fi
-
-        echo ""
-        echo -e "${BLUE}📋 服务访问地址:${NC}"
-        echo "  Deno 版本: http://localhost:8000"
-        echo "  Go 版本: http://localhost:8001"
-
-        echo ""
-        echo -e "${BLUE}📋 有用的命令:${NC}"
-        echo "  查看状态: docker compose ps"
-        echo "  查看日志: docker compose logs -f"
-        echo "  验证多端点: ./verify-multi-endpoints.sh"
-        if [[ "$restart_profiles" == *"warp"* ]]; then
-            echo "  验证WARP: ./verify-warp-proxy.sh"
-        fi
-
+    if curl -s --connect-timeout 5 http://localhost:$actual_deno_port/health >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Deno 服务健康检查通过 (端口: $actual_deno_port)${NC}"
     else
-        echo -e "${RED}❌ 服务重启失败${NC}"
-        echo -e "${BLUE}💡 故障排除建议:${NC}"
-        echo "  1. 检查 Docker 服务状态"
-        echo "  2. 查看错误日志: docker compose logs"
-        echo "  3. 检查端口占用情况"
-        return 1
+        echo -e "${YELLOW}⚠️ Deno 服务健康检查失败 (端口: $actual_deno_port)${NC}"
+        health_check_passed=false
+    fi
+
+    if curl -s --connect-timeout 5 http://localhost:$actual_go_port/health >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Go 服务健康检查通过 (端口: $actual_go_port)${NC}"
+    else
+        echo -e "${YELLOW}⚠️ Go 服务健康检查失败 (端口: $actual_go_port)${NC}"
+        health_check_passed=false
+    fi
+
+    if [[ "$restart_profiles" == *"warp"* ]]; then
+        if docker exec deepinfra-warp curl -s --connect-timeout 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+            echo -e "${GREEN}✅ WARP 代理验证通过${NC}"
+        else
+            echo -e "${YELLOW}⚠️ WARP 代理验证失败${NC}"
+            health_check_passed=false
+        fi
+    fi
+
+    echo ""
+    if [ "$health_check_passed" = true ]; then
+        echo -e "${GREEN}🎉 服务重启完成，所有服务运行正常！${NC}"
+    else
+        echo -e "${YELLOW}⚠️ 服务重启完成，但部分服务可能需要更多时间初始化${NC}"
+        echo -e "${BLUE}💡 建议等待1-2分钟后再次检查服务状态${NC}"
+    fi
+
+    echo ""
+    echo -e "${BLUE}📋 服务访问地址:${NC}"
+    echo "  Deno 版本: http://localhost:$actual_deno_port"
+    echo "  Go 版本: http://localhost:$actual_go_port"
+
+    echo ""
+    echo -e "${BLUE}📋 有用的命令:${NC}"
+    echo "  查看状态: docker compose ps"
+    echo "  查看日志: docker compose logs -f"
+    echo "  验证多端点: ./verify-multi-endpoints.sh"
+    if [[ "$restart_profiles" == *"warp"* ]]; then
+        echo "  验证WARP: ./verify-warp-proxy.sh"
+    fi
+
+    echo ""
+    echo -e "${BLUE}📋 当前配置摘要:${NC}"
+    if [ -f .env ]; then
+        if grep -q "^DEEPINFRA_MIRRORS=" .env; then
+            local mirrors_config=$(grep "^DEEPINFRA_MIRRORS=" .env | head -1)
+            local endpoint_count=$(echo "$mirrors_config" | grep -o "https://[^,]*" | wc -l)
+            echo "  多端点配置: $endpoint_count 个端点"
+        fi
+        if grep -q "^HTTP_PROXY=" .env; then
+            echo "  WARP 代理: 已启用"
+        fi
+        if grep -q "^MAX_CONCURRENT_CONNECTIONS=" .env; then
+            local max_conn=$(grep "^MAX_CONCURRENT_CONNECTIONS=" .env | cut -d'=' -f2)
+            echo "  高并发配置: 最大 $max_conn 连接"
+        fi
     fi
 }
 
