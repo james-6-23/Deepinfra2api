@@ -502,13 +502,6 @@ deploy_service() {
     # 端口配置检查
     configure_ports "$deployment_type"
 
-    # 配置 WARP 代理（如果需要）
-    if [[ "$profiles" == *"warp"* ]]; then
-        configure_warp_proxy "true"
-    else
-        configure_warp_proxy "false"
-    fi
-
     # 配置多端点（如果需要）
     if [ "$endpoints" = "multi" ]; then
         configure_multi_endpoints
@@ -534,8 +527,43 @@ deploy_service() {
     local actual_deno_port=${current_ports[0]}
     local actual_go_port=${current_ports[1]}
 
-    # 启动服务
-    if docker compose $profiles up -d --build; then
+    # 先启动服务（不包含 WARP 代理配置）
+    if [[ "$profiles" == *"warp"* ]]; then
+        # 对于 WARP 部署，先启动 WARP 服务
+        echo -e "${CYAN}🔧 正在启动 WARP 代理服务...${NC}"
+        if docker compose --profile warp up -d --build; then
+            echo -e "${GREEN}✅ WARP 代理服务启动成功${NC}"
+            echo -e "${YELLOW}⏳ 等待 WARP 代理初始化 (30秒)...${NC}"
+            sleep 30
+
+            # 配置 WARP 代理环境变量
+            configure_warp_proxy "true"
+
+            # 启动其他服务
+            echo -e "${CYAN}🔧 正在启动应用服务...${NC}"
+            if docker compose $profiles up -d --build; then
+                echo -e "${GREEN}✅ 所有服务启动成功${NC}"
+            else
+                echo -e "${RED}❌ 应用服务启动失败${NC}"
+                return 1
+            fi
+        else
+            echo -e "${RED}❌ WARP 代理服务启动失败${NC}"
+            return 1
+        fi
+    else
+        # 非 WARP 部署，直接启动
+        configure_warp_proxy "false"
+        if docker compose $profiles up -d --build; then
+            echo -e "${GREEN}✅ 服务启动成功${NC}"
+        else
+            echo -e "${RED}❌ 服务启动失败${NC}"
+            return 1
+        fi
+    fi
+
+    # 服务启动成功后的处理
+    if true; then
         echo -e "${GREEN}✅ $description 启动成功！${NC}"
 
         # 显示访问信息
